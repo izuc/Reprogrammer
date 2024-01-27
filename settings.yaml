@@ -1,0 +1,14 @@
+target_language: 'PHP 8.1'
+class_structure_threshold: 512
+max_chunk_size: 512
+opening_tag: '<?php'
+closing_tag: '?>'
+block_start_keyword: '^(class|struct|interface|enum)\s+\w+(?:<\w+,? ?\w+>)?\s*\('
+block_end_keyword: '\)'
+block_open_symbol: '{'
+block_close_symbol: '}'
+variable_declaration_pattern: '^([\\w\\d]+)\\s+(?<name>[\\w\\d]+)=(?<value>.*);'
+variable_conversion_format: '"$" + {name} + " = " + {value} + ";"'
+prompt: 'Please convert the following C# class into PHP 8.1 code. Ensure that the PHP code is fully compatible with PHP 8.1 standards. Start the PHP code with <?php and end with ?>. Include all the comments from the C# code in the PHP code, using // for single-line comments. Pay attention to the syntax differences between C# and PHP, such as variable declaration, class and method definitions, and type hinting. Preserve the logic and functionality of the original C# class as closely as possible in the PHP translation. Only output the converted code.'
+input_extension: '.cs'
+output_extension: '.php'
