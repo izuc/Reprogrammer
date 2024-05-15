@@ -1,7 +1,7 @@
-ai_service: "custom"  # Options: "openai", "custom", "claude"
+ai_service: "openai"  # Options: "openai", "custom", "claude"
 openai_api_key: 'your_openai_api_key'
 openai_api_url: 'https://api.openai.com/v1/chat/completions'
-openai_model: 'gpt-4-turbo'
+openai_model: 'gpt-4o'
 custom_text_generation_api_url: 'http://127.0.0.1:5000/v1/chat/completions'
 custom_text_generation_model: 'Llama-3-8B-Instruct-Coder-Q6_K'
 claude_api_url: 'https://api.anthropic.com/v1/messages'

@@ -28,7 +28,6 @@ public class API {
     private Map<String, Object> loadSettings() {
         Yaml yaml = new Yaml();
         try (InputStream input = new FileInputStream("settings.yaml")) {
-            // Use YAML to load settings into a Map
             return yaml.load(input);
         } catch (IOException e) {
             e.printStackTrace();
@@ -36,14 +35,12 @@ public class API {
         }
     }
 
-    // Modify the method to retrieve values from the settings Map instead of Properties
     public String getProperty(String key, String defaultValue) {
         return settings.containsKey(key) ? settings.get(key).toString() : defaultValue;
     }
 
     public String generateText(String text, List<Message> history, int maxTokens) {
-        // Retrieve the AI service setting from the loaded settings map
-        String service = getProperty("ai_service", "openai");  // Default to "openai" if not specified
+        String service = getProperty("ai_service", "openai");
         AIGeneratorInterface generator;
         switch (service) {
             case "openai":
@@ -91,10 +88,10 @@ public class API {
 
         public OpenAIService() {
             this.httpClient = new OkHttpClient.Builder()
-                          .readTimeout(30, TimeUnit.SECONDS)  // Increase read timeout to 30 seconds
-                          .writeTimeout(30, TimeUnit.SECONDS) // Increase write timeout to 30 seconds
-                          .connectTimeout(30, TimeUnit.SECONDS) // Increase connect timeout to 30 seconds
-                          .build();
+                    .readTimeout(500, TimeUnit.SECONDS)
+                    .writeTimeout(500, TimeUnit.SECONDS)
+                    .connectTimeout(500, TimeUnit.SECONDS)
+                    .build();
             this.apiKey = getProperty("openai_api_key", "");
             this.apiUrl = getProperty("openai_api_url", "https://api.openai.com/v1/chat/completions");
             this.model = getProperty("openai_model", "gpt-4-turbo");
@@ -104,22 +101,28 @@ public class API {
         public String generateText(String text, List<Message> history, int maxTokens) {
             List<Map<String, String>> formattedHistory = new ArrayList<>();
             for (Message message : history) {
-                formattedHistory.add(new HashMap<>() {{
-                    put("role", message.getRole());
-                    put("content", message.getContent());
-                }});
+                formattedHistory.add(new HashMap<>() {
+                    {
+                        put("role", message.getRole());
+                        put("content", message.getContent());
+                    }
+                });
             }
-            formattedHistory.add(new HashMap<>() {{
-                put("role", "user");
-                put("content", text);
-            }});
+            formattedHistory.add(new HashMap<>() {
+                {
+                    put("role", "user");
+                    put("content", text);
+                }
+            });
 
-            Map<String, Object> requestBody = new HashMap<>() {{
-                put("model", model);
-                put("messages", formattedHistory);
-                put("max_tokens", maxTokens);
-                put("temperature", 0.7);
-            }};
+            Map<String, Object> requestBody = new HashMap<>() {
+                {
+                    put("model", model);
+                    put("messages", formattedHistory);
+                    put("max_tokens", maxTokens);
+                    put("temperature", 0.7);
+                }
+            };
 
             try {
                 String jsonBody = objectMapper.writeValueAsString(requestBody);
@@ -132,12 +135,16 @@ public class API {
 
                 try (Response response = httpClient.newCall(request).execute()) {
                     String responseBody = response.body().string();
-                    Map<String, Object> responseMap = objectMapper.readValue(responseBody, new TypeReference<Map<String, Object>>() {});
+                    Map<String, Object> responseMap = objectMapper.readValue(responseBody,
+                            new TypeReference<Map<String, Object>>() {
+                            });
                     List<?> rawChoices = (List<?>) responseMap.get("choices");
                     List<Map<String, Object>> choices = safelyCastListOfMaps(rawChoices);
 
                     for (Map<String, Object> choice : choices) {
-                        Map<String, String> message = objectMapper.convertValue(choice.get("message"), new TypeReference<Map<String, String>>() {});
+                        Map<String, String> message = objectMapper.convertValue(choice.get("message"),
+                                new TypeReference<Map<String, String>>() {
+                                });
                         if (message != null && "assistant".equals(message.get("role"))) {
                             return message.get("content");
                         }
@@ -160,10 +167,10 @@ public class API {
             this.apiUrl = getProperty("custom_text_generation_api_url", "http://127.0.0.1:5000/v1/chat/completions");
             this.model = getProperty("custom_text_generation_model", "");
             this.httpClient = new OkHttpClient.Builder()
-                          .readTimeout(500, TimeUnit.SECONDS)  // Increase read timeout to 30 seconds
-                          .writeTimeout(500, TimeUnit.SECONDS) // Increase write timeout to 30 seconds
-                          .connectTimeout(500, TimeUnit.SECONDS) // Increase connect timeout to 30 seconds
-                          .build();
+                    .readTimeout(500, TimeUnit.SECONDS)
+                    .writeTimeout(500, TimeUnit.SECONDS)
+                    .connectTimeout(500, TimeUnit.SECONDS)
+                    .build();
         }
 
         @Override
@@ -171,12 +178,14 @@ public class API {
             List<Message> messages = new ArrayList<>(history);
             messages.add(new Message("user", text));
 
-            Map<String, Object> requestBody = new HashMap<>() {{
-                put("messages", messages);
-                if (!model.isEmpty()) {
-                    put("model", model);
+            Map<String, Object> requestBody = new HashMap<>() {
+                {
+                    put("messages", messages);
+                    if (!model.isEmpty()) {
+                        put("model", model);
+                    }
                 }
-            }};
+            };
 
             try {
                 String jsonBody = objectMapper.writeValueAsString(requestBody);
@@ -188,13 +197,17 @@ public class API {
 
                 try (Response response = httpClient.newCall(request).execute()) {
                     String responseBody = response.body().string();
-                    Map<String, Object> responseMap = objectMapper.readValue(responseBody, new TypeReference<Map<String, Object>>() {});
+                    Map<String, Object> responseMap = objectMapper.readValue(responseBody,
+                            new TypeReference<Map<String, Object>>() {
+                            });
                     List<?> rawChoices = (List<?>) responseMap.get("choices");
                     List<Map<String, Object>> choices = safelyCastListOfMaps(rawChoices);
 
                     if (!choices.isEmpty()) {
                         Map<String, Object> firstChoice = choices.get(0);
-                        Map<String, String> message = objectMapper.convertValue(firstChoice.get("message"), new TypeReference<Map<String, String>>() {});
+                        Map<String, String> message = objectMapper.convertValue(firstChoice.get("message"),
+                                new TypeReference<Map<String, String>>() {
+                                });
                         if (message != null) {
                             String responseContent = message.get("content");
                             messages.add(new Message("assistant", responseContent));
@@ -220,13 +233,13 @@ public class API {
         public ClaudeAIService() {
             this.apiUrl = getProperty("claude_api_url", "https://api.anthropic.com/v1/messages");
             this.apiKey = getProperty("claude_api_key", "");
-            this.apiVersion = getProperty("claude_api_key", "2023-06-01");
+            this.apiVersion = getProperty("claude_api_version", "2023-06-01");
             this.model = getProperty("claude_model", "claude-3-sonnet-20240229");
             this.httpClient = new OkHttpClient.Builder()
-                          .readTimeout(30, TimeUnit.SECONDS)  // Increase read timeout to 30 seconds
-                          .writeTimeout(30, TimeUnit.SECONDS) // Increase write timeout to 30 seconds
-                          .connectTimeout(30, TimeUnit.SECONDS) // Increase connect timeout to 30 seconds
-                          .build();
+                    .readTimeout(500, TimeUnit.SECONDS)
+                    .writeTimeout(500, TimeUnit.SECONDS)
+                    .connectTimeout(500, TimeUnit.SECONDS)
+                    .build();
         }
 
         @Override
@@ -234,11 +247,13 @@ public class API {
             List<Message> messages = new ArrayList<>(history);
             messages.add(new Message("user", text));
 
-            Map<String, Object> requestBody = new HashMap<>() {{
-                put("model", model);
-                put("messages", messages);
-                put("max_tokens", maxTokens);
-            }};
+            Map<String, Object> requestBody = new HashMap<>() {
+                {
+                    put("model", model);
+                    put("messages", messages);
+                    put("max_tokens", maxTokens);
+                }
+            };
 
             try {
                 String jsonBody = objectMapper.writeValueAsString(requestBody);
@@ -252,7 +267,9 @@ public class API {
 
                 try (Response response = httpClient.newCall(request).execute()) {
                     String responseBody = response.body().string();
-                    Map<String, Object> responseMap = objectMapper.readValue(responseBody, new TypeReference<Map<String, Object>>() {});
+                    Map<String, Object> responseMap = objectMapper.readValue(responseBody,
+                            new TypeReference<Map<String, Object>>() {
+                            });
                     List<?> rawContent = (List<?>) responseMap.get("content");
                     List<Map<String, Object>> content = safelyCastListOfMaps(rawContent);
 
@@ -271,7 +288,6 @@ public class API {
         }
     }
 
-    // Helper method to safely cast a List<?> to List<Map<String, Object>> with type checks
     private List<Map<String, Object>> safelyCastListOfMaps(List<?> list) {
         List<Map<String, Object>> castedList = new ArrayList<>();
         if (list != null) {

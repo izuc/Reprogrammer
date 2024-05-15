@@ -3,3 +3,4 @@ settings.yaml
 
 # Ignore the target directory
 target/
+logs/

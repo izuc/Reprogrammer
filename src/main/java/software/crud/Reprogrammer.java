@@ -5,6 +5,8 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -46,11 +48,9 @@ class Assistant {
 
     public boolean testApiConnection() {
         try {
-            // Test the API connection by generating a simple text
             String testPrompt = "Test API connection";
             int testMaxTokens = 10;
             String response = api.generateText(testPrompt, history, testMaxTokens);
-            // Check if the response is not empty
             return !response.isEmpty();
         } catch (Exception e) {
             e.printStackTrace();
@@ -61,11 +61,8 @@ class Assistant {
     public String convertUsingAPI(String promptText, String fileContent, boolean addToHistory) {
         try {
             String combinedQuestion = promptText + ": " + fileContent;
-            // Set the maximum number of tokens for the response
             int maxTokens = 4096;
-            // Generate the response using the API with the stored history
             String response = api.generateText(combinedQuestion, history, maxTokens);
-            // Add the prompt and response to the history
             if (addToHistory) {
                 addToHistory("user", combinedQuestion);
                 addToHistory("assistant", response);
@@ -80,7 +77,6 @@ class Assistant {
     public String generateText(String aiQuery, int maxTokens, boolean addToHistory) {
         try {
             String response = api.generateText(aiQuery, history, maxTokens);
-            // Add the prompt and response to the history
             if (addToHistory) {
                 addToHistory("user", aiQuery);
                 addToHistory("assistant", response);
@@ -94,7 +90,7 @@ class Assistant {
 
     private void addToHistory(String role, String content) {
         if (history.size() >= MAX_HISTORY_SIZE) {
-            history.remove(1); // Remove the oldest user or assistant message, not the initial system message
+            history.remove(1);
         }
         history.add(new API.Message(role, content));
     }
@@ -188,57 +184,51 @@ class JavaConversion {
             requestBuilder.append("Code:\n").append(code).append("\n");
         }
 
-        // Ensuring the request strictly adheres to XML structure expectations
         requestBuilder.append("format: XML\n");
         requestBuilder.append(
-                "structure: <response><code>{converted_code}</code><thoughts>{thoughts}</thoughts></response>\n");
+                "structure: <response><code>{converted_code}</code><thoughts>{thoughts}</thoughts><objectives>{objectives}</objectives></response>\n");
 
         requestBuilder.append("settings\n");
         requestBuilder.append("maxTokens: ").append(settings.getMaxTokens()).append("\n");
 
         requestBuilder.append("assistant\n");
 
-        return requestBuilder.toString().trim(); // Using trim to remove any extraneous whitespace at the end
+        return requestBuilder.toString().trim();
     }
 
     private String extractCode(String response) {
-        // Extract content within the first <code> tag, allowing for responses without a closing tag
         Pattern codePattern = Pattern.compile("<code[^>]*>(.*?)</code>|<code[^>]*>(.*)", Pattern.DOTALL);
         Matcher codeMatcher = codePattern.matcher(response);
-    
+
         if (codeMatcher.find()) {
             String extractedCode;
             if (codeMatcher.group(1) != null) {
-                extractedCode = codeMatcher.group(1).trim(); // Code with closing tag
+                extractedCode = codeMatcher.group(1).trim();
             } else {
-                extractedCode = codeMatcher.group(2).trim(); // Code without closing tag
+                extractedCode = codeMatcher.group(2).trim();
             }
-            // Remove any potential unclosed CDATA sections correctly
             extractedCode = removeCData(extractedCode);
             return StringEscapeUtils.unescapeHtml4(extractedCode);
         } else {
             logger.warn("No <code> tags found in the response");
         }
-    
+
         return "";
     }
 
     private String removeCData(String content) {
-        // Remove CDATA sections with closing tag
         Pattern cdataPattern = Pattern.compile("<!\\[CDATA\\[(.*?)\\]\\]>", Pattern.DOTALL);
         Matcher cdataMatcher = cdataPattern.matcher(content);
         if (cdataMatcher.find()) {
             return cdataMatcher.group(1).trim();
         }
 
-        // Remove unclosed CDATA sections
         Pattern unclosedCdataPattern = Pattern.compile("<!\\[CDATA\\[(.*)", Pattern.DOTALL);
         Matcher unclosedCdataMatcher = unclosedCdataPattern.matcher(content);
         if (unclosedCdataMatcher.find()) {
             content = unclosedCdataMatcher.group(1);
         }
 
-        // Remove any remaining opening and closing CDATA tags
         content = content.replaceAll("<!\\[CDATA\\[", "");
         content = content.replaceAll("\\]\\]>", "");
 
@@ -404,10 +394,7 @@ class SyntaxError {
 
 class LanguageSettings {
 
-    // Target language for conversion
     private final String targetLanguage;
-
-    // Maximum chunk size for API interaction
     private final int maxTokens;
     private final String prompt;
     private final String inputExtension;
@@ -453,7 +440,7 @@ public class Reprogrammer extends JFrame {
     private JProgressBar progressBar;
     private JLabel fileStatusLabel;
     private JButton convertButton;
-    private JFileChooser fileChooser = new JFileChooser(); // Single file chooser for both input and output
+    private JFileChooser fileChooser = new JFileChooser();
     private LanguageSettings settings;
     private Assistant api;
     private static final Logger logger = LoggerFactory.getLogger(Reprogrammer.class);
@@ -490,11 +477,11 @@ public class Reprogrammer extends JFrame {
         protected void done() {
             if (!isCancelled()) {
                 try {
-                    get(); // This will throw the exception if one occurred during doInBackground()
+                    get();
                     System.out.println("All files processed.");
                     fileStatusLabel.setText("Processing Complete");
                 } catch (ExecutionException e) {
-                    Throwable cause = e.getCause(); // Get the actual cause
+                    Throwable cause = e.getCause();
                     System.err.println("Error during processing: " + cause.getMessage());
                     JOptionPane.showMessageDialog(null, "Error: " + cause.getMessage());
                 } catch (InterruptedException e) {
@@ -507,7 +494,6 @@ public class Reprogrammer extends JFrame {
 
         @Override
         protected void process(List<Integer> chunks) {
-            // Update progress bar with the last published value
             if (!chunks.isEmpty()) {
                 int latestValue = chunks.get(chunks.size() - 1);
                 progressBar.setValue(latestValue);
@@ -555,8 +541,8 @@ public class Reprogrammer extends JFrame {
     public Reprogrammer(LanguageSettings settings) {
         this.settings = settings;
         this.api = new Assistant();
-        initComponents(); // Make sure all components are initialized here
-        addListeners(); // Setup all listeners after components are initialized
+        initComponents();
+        addListeners();
     }
 
     private void initComponents() {
@@ -564,7 +550,6 @@ public class Reprogrammer extends JFrame {
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new BorderLayout(10, 10));
 
-        // Set application icon
         setIconImage(Toolkit.getDefaultToolkit().getImage(getClass().getResource("/icons/app.png")));
 
         setupTextArea();
@@ -620,12 +605,12 @@ public class Reprogrammer extends JFrame {
         convertButton = new JButton("Convert");
         statusLabel = new JLabel("Status: Idle");
         progressBar = new JProgressBar();
-        fileStatusLabel = new JLabel("File Status: Idle"); // Initialize the label here.
+        fileStatusLabel = new JLabel("File Status: Idle");
 
         actionPanel.add(convertButton);
         actionPanel.add(statusLabel);
         actionPanel.add(progressBar);
-        actionPanel.add(fileStatusLabel); // Make sure to add it to the panel.
+        actionPanel.add(fileStatusLabel);
 
         add(actionPanel, BorderLayout.SOUTH);
     }
@@ -656,7 +641,7 @@ public class Reprogrammer extends JFrame {
     }
 
     private void convertFiles(ActionEvent e) {
-        if (fileStatusLabel != null) { // Check if the label is initialized
+        if (fileStatusLabel != null) {
             fileStatusLabel.setText("Processing...");
         }
         String inputFolderPath = inputDirectoryPathField.getText();
@@ -693,7 +678,7 @@ public class Reprogrammer extends JFrame {
                 System.out.println("File content is empty, skipping conversion.");
                 return false;
             }
-    
+
             String convertedContent = javaConversion.convertCode(fileContent, settings.getPrompt(), "");
             if (convertedContent.trim().isEmpty()) {
                 System.out.println("Initial conversion failed or resulted in empty content.");
@@ -704,7 +689,7 @@ public class Reprogrammer extends JFrame {
 
             int maxAttempts = 5;
             boolean isConversionSuccessful = false;
-    
+
             for (int attempt = 0; attempt < maxAttempts && !isConversionSuccessful; attempt++) {
                 List<SyntaxError> errors = checkSyntax(convertedContent);
                 if (errors.isEmpty()) {
@@ -712,24 +697,20 @@ public class Reprogrammer extends JFrame {
                     isConversionSuccessful = true;
                 } else {
                     System.out.println("Syntax errors found: " + errors);
-    
-                    // Ask AI if fixing errors is necessary and check response for "yes"
+
                     String aiResponse = api.generateText("Do errors need fixing?", 100, false);
                     if (aiResponse.toLowerCase().contains("yes")) {
-                        // Compile all error messages into a single string
                         String errorMessages = errors.stream()
                                 .map(error -> "Line " + error.getLineNumber() + ": " + error.getMessage())
                                 .collect(Collectors.joining("\n"));
-    
-                        // If there are no errors, return the current content unmodified
+
                         if (errorMessages.isEmpty()) {
                             continue;
                         }
-    
-                        // Create a comprehensive prompt for the AI asking for fixes from the start of the file
-                        String fixPrompt = "Please output the entire file from the start without omitting anything fixing the following errors:\n" + errorMessages;
-                        
-                        // Update convertedContent with AI response
+
+                        String fixPrompt = "Please output the entire file from the start without omitting anything fixing the following errors:\n"
+                                + errorMessages;
+
                         convertedContent = javaConversion.convertCode(convertedContent, fixPrompt, fileContent);
                         updateTextArea(convertedContent);
                         saveConvertedFile(file, convertedContent);
@@ -739,7 +720,7 @@ public class Reprogrammer extends JFrame {
                     }
                 }
             }
-    
+
             if (!isConversionSuccessful) {
                 System.out.println("Could not resolve all syntax errors after multiple attempts.");
             }
@@ -749,7 +730,7 @@ public class Reprogrammer extends JFrame {
             e.printStackTrace();
             return false;
         }
-    }    
+    }
 
     private List<SyntaxError> checkSyntax(String javaCode) {
         JavaParser parser = new JavaParser();
@@ -767,38 +748,50 @@ public class Reprogrammer extends JFrame {
     }
 
     private void updateTextArea(String content) {
-        // Clear the existing content
         convertedCodeTextArea.setText("");
 
-        // Build the new content to add
         StringBuilder formattedText = new StringBuilder();
         String[] lines = content.split("\\r?\\n|\\r|\\n");
         for (String line : lines) {
             formattedText.append(line).append(System.lineSeparator());
         }
 
-        // Append the new content to the text area
         convertedCodeTextArea.append(formattedText.toString());
 
-        // Set the caret position to the end of the text area to automatically scroll
-        // down
         convertedCodeTextArea.setCaretPosition(convertedCodeTextArea.getDocument().getLength());
     }
 
     private void saveConvertedFile(File originalFile, String convertedContent) throws IOException {
         String outputExtension = settings.getOutputExtension();
-        String relativePath = inputFolder.toURI().relativize(originalFile.getParentFile().toURI()).getPath();
-        File subfolder = new File(outputFolder, relativePath);
-        if (!subfolder.exists() && !subfolder.mkdirs()) {
-            System.err.println("Failed to create directory: " + subfolder);
-            return;
+    
+        // Correctly construct the relative path
+        Path relativePath = inputFolder.toPath().relativize(originalFile.toPath());
+        Path outputPath = outputFolder.toPath().resolve(relativePath);
+    
+        // Ensure the directory structure exists
+        Path parentDir = outputPath.getParent();
+        if (parentDir != null && !Files.exists(parentDir)) {
+            try {
+                Files.createDirectories(parentDir);
+            } catch (IOException e) {
+                System.err.println("Failed to create directory: " + parentDir);
+                return;
+            }
         }
-
-        String outputFileName = originalFile.getName().substring(0, originalFile.getName().lastIndexOf('.'))
-                + outputExtension;
-        File outputFile = new File(subfolder, outputFileName);
-        saveConvertedContent(outputFile, convertedContent);
-    }
+    
+        // Change the extension of the output file
+        String outputFileName = outputPath.getFileName().toString();
+        int lastDotIndex = outputFileName.lastIndexOf('.');
+        if (lastDotIndex != -1) {
+            outputFileName = outputFileName.substring(0, lastDotIndex) + outputExtension;
+        } else {
+            outputFileName += outputExtension;
+        }
+    
+        // Create the final output file path
+        Path finalOutputPath = outputPath.resolveSibling(outputFileName);
+        saveConvertedContent(finalOutputPath.toFile(), convertedContent);
+    } 
 
     private String readFileContent(File file) {
         StringBuilder contentBuilder = new StringBuilder();
@@ -814,39 +807,43 @@ public class Reprogrammer extends JFrame {
     }
 
     private void saveConvertedContent(File originalFile, String convertedContent) {
-        // Determine output file extension and relative path
         String outputExtension = settings.getOutputExtension();
-        String relativePath = inputFolder.toURI().relativize(originalFile.getParentFile().toURI()).getPath();
-        File subfolder = new File(outputFolder, relativePath);
-
-        // Create subfolder if it does not exist
-        if (!subfolder.exists()) {
-            subfolder.mkdirs();
+        
+        // Construct the relative path
+        Path relativePath = inputFolder.toPath().relativize(originalFile.toPath()).getParent();
+        
+        // Ensure the directory structure exists
+        Path outputSubfolder = outputFolder.toPath().resolve(relativePath);
+        File subfolder = outputSubfolder.toFile();
+        if (!subfolder.exists() && !subfolder.mkdirs()) {
+            System.err.println("Failed to create directory: " + subfolder);
+            return;
         }
-
-        // Construct the new file name and path
+    
+        // Extract the base file name without its extension
         String originalFileName = originalFile.getName();
-
         int lastDotIndex = originalFileName.lastIndexOf('.');
         String baseFileName = (lastDotIndex > 0) ? originalFileName.substring(0, lastDotIndex) : originalFileName;
         String newFileName = baseFileName + outputExtension;
-
-        File outputFile = new File(originalFile.getParent(), newFileName); // Use original file's parent directory
-
+    
+        // Create the final output file path
+        Path outputFilePath = outputSubfolder.resolve(newFileName);
+        File outputFile = outputFilePath.toFile();
+    
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
             writer.write(convertedContent);
             api.clearHistory();
         } catch (IOException e) {
             e.printStackTrace();
         }
-    }
+    }             
 
     public static void main(String[] args) {
-        String settingsFilePath = "settings.yaml"; // Default settings file path
+        String settingsFilePath = "settings.yaml";
         Map<String, Object> settings;
 
         if (args.length > 0) {
-            settingsFilePath = args[0]; // Override default with first argument
+            settingsFilePath = args[0];
         }
 
         try {
@@ -855,7 +852,6 @@ public class Reprogrammer extends JFrame {
             for (Map.Entry<String, Object> entry : settings.entrySet()) {
                 System.out.println(entry.getKey() + ": " + entry.getValue());
             }
-            // Extract language settings
             LanguageSettings languageSettings = new LanguageSettings(
                     (String) settings.get("target_language"),
                     (Integer) settings.get("max_tokens"),
