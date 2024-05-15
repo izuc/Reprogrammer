@@ -1,0 +1,5 @@
+# Ignore settings.yaml
+settings.yaml
+
+# Ignore the target directory
+target/
