@@ -227,6 +227,12 @@ class JavaConversion {
 
         return content.trim();
     }
+
+    public String generateMetaContent(String fileContent) throws IOException {
+        String prompt = "Generate a summary of the method signatures and class definitions from the following code. " +
+                "Do not include the method bodies. Only output the signatures and class definitions.";
+        return api.generateText(prompt + "\n" + fileContent, settings.getMaxTokens(), false);
+    }
 }
 
 class ConversionResponse {
@@ -453,6 +459,7 @@ public class Reprogrammer extends JFrame {
     private JLabel fileStatusLabel;
     private JButton startButton;
     private JButton pauseButton;
+    private JCheckBox includeMetaCheckBox;
     private JFileChooser fileChooser = new JFileChooser();
     private LanguageSettings settings;
     private Assistant api;
@@ -469,19 +476,19 @@ public class Reprogrammer extends JFrame {
         @Override
         protected Void doInBackground() {
             try {
-                System.out.println("API call started.");
+                logToTextArea("API call started.");
                 if (api.testApiConnection()) {
-                    System.out.println("API connection successful.");
+                    logToTextArea("API connection successful.");
                     processDirectory(directory);
                 } else {
-                    System.err.println("Failed to connect to the API.");
+                    logToTextArea("Failed to connect to the API.");
                     cancel(true);
                 }
             } catch (IOException e) {
-                System.err.println("IO Exception: " + e.getMessage());
+                logToTextArea("IO Exception: " + e.getMessage());
                 cancel(true);
             } catch (Exception e) {
-                System.err.println("General Exception: " + e.getMessage());
+                logToTextArea("General Exception: " + e.getMessage());
                 cancel(true);
             }
             return null;
@@ -492,15 +499,15 @@ public class Reprogrammer extends JFrame {
             if (!isCancelled()) {
                 try {
                     get();
-                    System.out.println("All files processed.");
+                    logToTextArea("All files processed.");
                     fileStatusLabel.setText("Processing Complete");
                 } catch (ExecutionException e) {
                     Throwable cause = e.getCause();
-                    System.err.println("Error during processing: " + cause.getMessage());
+                    logToTextArea("Error during processing: " + cause.getMessage());
                     JOptionPane.showMessageDialog(null, "Error: " + cause.getMessage());
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    System.err.println("Task interrupted.");
+                    logToTextArea("Task interrupted.");
                 }
             }
             startButton.setEnabled(true);
@@ -541,10 +548,22 @@ public class Reprogrammer extends JFrame {
                     if (file.isDirectory()) {
                         processDirectory(file);
                     } else {
-                        processFile(file, directoryStructure);
+                        clearTextArea();
+                        String fileContent = readFileContent(file);
+                        boolean isProcessed = processFile(file, directoryStructure, fileContent);
                         processedFiles++;
                         int progress = (int) ((processedFiles / (double) totalFiles) * 100);
                         publish(progress);
+
+                        if (isProcessed && includeMetaCheckBox.isSelected()) {
+                            String metaContent = generateMetaContent(file.getParentFile(), file);
+                            if (!metaContent.isEmpty()) {
+                                String metaPrompt = settings.getPrompt() + "\n\n" +
+                                "The following is the meta content of other classes within the project to give more context. Please only use it as a reference for creating packages, imports and and an invoking other methods:\n" + metaContent;
+                                JavaConversion javaConversion = new JavaConversion(api, settings);
+                                javaConversion.convertCode(fileContent, metaPrompt, "");
+                            }
+                        }
                     }
                 }
             }
@@ -586,21 +605,23 @@ public class Reprogrammer extends JFrame {
             }
         }
 
-        private boolean processFile(File file, String directoryStructure) {
+        private boolean processFile(File file, String directoryStructure, String fileContent) {
             try {
                 JavaConversion javaConversion = new JavaConversion(api, settings);
-                String fileContent = readFileContent(file);
                 if (fileContent.isEmpty()) {
-                    System.out.println("File content is empty, skipping conversion.");
+                    logToTextArea("File content is empty, skipping conversion.");
                     return false;
                 }
 
                 String fullPrompt = settings.getPrompt() + "\nProject structure:\n" + directoryStructure;
+
                 String convertedContent = javaConversion.convertCode(fileContent, fullPrompt, "");
                 if (convertedContent.trim().isEmpty()) {
-                    System.out.println("Initial conversion failed or resulted in empty content.");
+                    logToTextArea("Initial conversion failed or resulted in empty content.");
                     return false;
                 }
+
+                clearTextArea();
                 updateTextArea(convertedContent);
                 saveConvertedFile(file, convertedContent);
 
@@ -613,7 +634,7 @@ public class Reprogrammer extends JFrame {
                         saveConvertedFile(file, convertedContent);
                         isConversionSuccessful = true;
                     } else {
-                        System.out.println("Syntax errors found: " + errors);
+                        logToTextArea("Syntax errors found: " + errors);
 
                         String aiResponse = api.generateText("Do errors need fixing?", 100, false);
                         if (aiResponse.toLowerCase().contains("yes")) {
@@ -629,24 +650,42 @@ public class Reprogrammer extends JFrame {
                                     + errorMessages;
 
                             convertedContent = javaConversion.convertCode(convertedContent, fixPrompt, fileContent);
+                            clearTextArea();
                             updateTextArea(convertedContent);
                             saveConvertedFile(file, convertedContent);
                         } else {
-                            System.out.println("Based on AI response, no error fixing needed. Stopping attempts.");
+                            logToTextArea("Based on AI response, no error fixing needed. Stopping attempts.");
                             break;
                         }
                     }
                 }
 
                 if (!isConversionSuccessful) {
-                    System.out.println("Could not resolve all syntax errors after multiple attempts.");
+                    logToTextArea("Could not resolve all syntax errors after multiple attempts.");
                 }
                 return isConversionSuccessful;
             } catch (Exception e) {
-                System.err.println("Error processing file: " + file.getAbsolutePath());
+                logToTextArea("Error processing file: " + file.getAbsolutePath());
                 e.printStackTrace();
                 return false;
             }
+        }
+
+        private String generateMetaContent(File parentDirectory, File currentFile) throws IOException {
+            StringBuilder metaContent = new StringBuilder();
+            File[] files = parentDirectory.listFiles((dir, name) -> name.endsWith(settings.getInputExtension()));
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isFile() && !file.equals(currentFile)) {
+                        String otherFileContent = readFileContent(file);
+                        JavaConversion javaConversion = new JavaConversion(api, settings);
+                        String fileMetaContent = javaConversion.generateMetaContent(otherFileContent);
+                        metaContent.append("File: ").append(file.getName()).append("\n");
+                        metaContent.append(fileMetaContent).append("\n\n");
+                    }
+                }
+            }
+            return metaContent.toString();
         }
     }
 
@@ -757,8 +796,10 @@ public class Reprogrammer extends JFrame {
         startButton = new JButton("Start");
         pauseButton = new JButton("Pause");
         pauseButton.setEnabled(false);
+        includeMetaCheckBox = new JCheckBox("Include Meta Content");
         buttonPanel.add(startButton);
         buttonPanel.add(pauseButton);
+        buttonPanel.add(includeMetaCheckBox);
 
         bottomPanel.add(buttonPanel, BorderLayout.WEST);
         bottomPanel.add(progressPanel, BorderLayout.CENTER);
@@ -852,10 +893,20 @@ public class Reprogrammer extends JFrame {
         return syntaxErrors;
     }
 
+    private void clearTextArea() {
+        codeTextArea.setText("");
+    }
+
     private void updateTextArea(String content) {
         codeTextArea.append(content);
         codeTextArea.append(System.lineSeparator());
         codeTextArea.setCaretPosition(codeTextArea.getDocument().getLength());
+    }
+
+    private void logToTextArea(String message) {
+        logTextArea.append(message);
+        logTextArea.append(System.lineSeparator());
+        logTextArea.setCaretPosition(logTextArea.getDocument().getLength());
     }
 
     private void saveConvertedFile(File originalFile, String convertedContent) throws IOException {
@@ -870,7 +921,7 @@ public class Reprogrammer extends JFrame {
             try {
                 Files.createDirectories(parentDir);
             } catch (IOException e) {
-                System.err.println("Failed to create directory: " + parentDir);
+                logToTextArea("Failed to create directory: " + parentDir);
                 return;
             }
         }
@@ -912,7 +963,7 @@ public class Reprogrammer extends JFrame {
         Path outputSubfolder = outputFolder.toPath().resolve(relativePath);
         File subfolder = outputSubfolder.toFile();
         if (!subfolder.exists() && !subfolder.mkdirs()) {
-            System.err.println("Failed to create directory: " + subfolder);
+            logToTextArea("Failed to create directory: " + subfolder);
             return;
         }
 
@@ -929,7 +980,7 @@ public class Reprogrammer extends JFrame {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
             writer.write(convertedContent);
             api.clearHistory();
-            logTextArea.append("Converted: " + outputFile.getAbsolutePath() + System.lineSeparator());
+            logToTextArea("Converted: " + outputFile.getAbsolutePath());
         } catch (IOException e) {
             e.printStackTrace();
         }
