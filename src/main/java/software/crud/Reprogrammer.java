@@ -4,7 +4,6 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.io.*;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.ArrayList;
@@ -27,7 +26,6 @@ import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
-
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.text.StringEscapeUtils;
 
@@ -961,39 +959,6 @@ public class Reprogrammer extends JFrame {
             logger.error("Error reading file content: {}", file.getAbsolutePath(), e);
         }
         return contentBuilder.toString();
-    }
-
-    private void saveConvertedContent(File originalFile, String convertedContent) {
-        String outputExtension = settings.getOutputExtension();
-
-        // Construct the relative path
-        Path relativePath = inputFolder.toPath().relativize(originalFile.toPath()).getParent();
-
-        // Ensure the directory structure exists
-        Path outputSubfolder = outputFolder.toPath().resolve(relativePath);
-        File subfolder = outputSubfolder.toFile();
-        if (!subfolder.exists() && !subfolder.mkdirs()) {
-            logToTextArea("Failed to create directory: " + subfolder);
-            return;
-        }
-
-        // Extract the base file name without its extension
-        String originalFileName = originalFile.getName();
-        int lastDotIndex = originalFileName.lastIndexOf('.');
-        String baseFileName = (lastDotIndex > 0) ? originalFileName.substring(0, lastDotIndex) : originalFileName;
-        String newFileName = toCamelCase(baseFileName) + outputExtension;
-
-        // Create the final output file path
-        Path outputFilePath = outputSubfolder.resolve(newFileName);
-        File outputFile = outputFilePath.toFile();
-
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
-            writer.write(convertedContent);
-            api.clearHistory();
-            logToTextArea("Converted: " + outputFile.getAbsolutePath());
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
     }
 
     static String toCamelCase(String input) {
