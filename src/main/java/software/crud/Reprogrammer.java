@@ -606,6 +606,7 @@ public class Reprogrammer extends JFrame {
                 }
             }
         }
+
         private boolean processFile(File file, String directoryStructure, String fileContent) {
             try {
                 JavaConversion javaConversion = new JavaConversion(api, settings);
@@ -912,32 +913,41 @@ public class Reprogrammer extends JFrame {
     private void saveConvertedFile(File originalFile, String convertedContent) throws IOException {
         String outputExtension = settings.getOutputExtension();
 
-        // Correctly construct the relative path
-        Path relativePath = inputFolder.toPath().relativize(originalFile.toPath());
-        Path outputPath = outputFolder.toPath().resolve(relativePath);
-        // Ensure the directory structure exists
-        Path parentDir = outputPath.getParent();
-        if (parentDir != null && !Files.exists(parentDir)) {
-            try {
-                Files.createDirectories(parentDir);
-            } catch (IOException e) {
-                logToTextArea("Failed to create directory: " + parentDir);
-                return;
-            }
+        // Construct the relative path from the input folder to the original file's
+        // parent
+        Path relativePath = inputFolder.toPath().relativize(originalFile.toPath()).getParent();
+        if (relativePath == null) {
+            // Handle the case where the file is in the root directory of the input folder
+            relativePath = Path.of("");
         }
 
-        // Change the extension of the output file
-        String outputFileName = outputPath.getFileName().toString();
-        int lastDotIndex = outputFileName.lastIndexOf('.');
-        if (lastDotIndex != -1) {
-            outputFileName = outputFileName.substring(0, lastDotIndex) + outputExtension;
-        } else {
-            outputFileName += outputExtension;
+        // Ensure the directory structure exists in the output folder
+        Path outputSubfolder = outputFolder.toPath().resolve(relativePath);
+        File subfolder = outputSubfolder.toFile();
+        if (!subfolder.exists() && !subfolder.mkdirs()) {
+            logToTextArea("Failed to create directory: " + subfolder.getAbsolutePath());
+            return;
         }
+
+        // Extract the base file name without its extension
+        String originalFileName = originalFile.getName();
+        int lastDotIndex = originalFileName.lastIndexOf('.');
+        String baseFileName = (lastDotIndex > 0) ? originalFileName.substring(0, lastDotIndex) : originalFileName;
+        String newFileName = toCamelCase(baseFileName) + outputExtension;
 
         // Create the final output file path
-        Path finalOutputPath = outputPath.resolveSibling(outputFileName);
-        saveConvertedContent(finalOutputPath.toFile(), convertedContent);
+        Path outputFilePath = outputSubfolder.resolve(newFileName);
+        File outputFile = outputFilePath.toFile();
+
+        // Write the converted content to the output file
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
+            writer.write(convertedContent);
+            api.clearHistory();
+            logToTextArea("Converted: " + outputFile.getAbsolutePath());
+        } catch (IOException e) {
+            logToTextArea("Error writing to file: " + outputFile.getAbsolutePath());
+            e.printStackTrace();
+        }
     }
 
     private String readFileContent(File file) {
