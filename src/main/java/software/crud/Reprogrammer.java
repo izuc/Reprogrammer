@@ -6,8 +6,9 @@ import java.awt.event.ActionEvent;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -26,6 +27,8 @@ import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
+
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.text.StringEscapeUtils;
 
 class Assistant {
@@ -523,46 +526,45 @@ public class Reprogrammer extends JFrame {
         }
 
         private void processDirectory(File directory) throws IOException {
-            File[] files = directory.listFiles((dir, name) -> name.endsWith(settings.getInputExtension()));
+            File[] files = directory.listFiles();
+            if (files == null)
+                return;
+
             int totalFiles = countFiles(directory);
             int processedFiles = 0;
-
-            if (files != null) {
-                // Generate the directory and file structure
-                String directoryStructure = generateDirectoryStructure(directory, settings.getInputExtension());
-
-                for (File file : files) {
-                    if (isCancelled()) {
-                        break;
-                    }
-                    if (isPaused) {
-                        synchronized (this) {
-                            try {
-                                wait();
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                break;
-                            }
+            String directoryStructure = generateDirectoryStructure(directory, settings.getInputExtension());
+            for (File file : files) {
+                if (isCancelled()) {
+                    break;
+                }
+                if (isPaused) {
+                    synchronized (this) {
+                        try {
+                            wait();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
                         }
                     }
-                    if (file.isDirectory()) {
-                        processDirectory(file);
-                    } else {
-                        clearTextArea();
-                        String fileContent = readFileContent(file);
-                        boolean isProcessed = processFile(file, directoryStructure, fileContent);
-                        processedFiles++;
-                        int progress = (int) ((processedFiles / (double) totalFiles) * 100);
-                        publish(progress);
+                }
+                if (file.isDirectory()) {
+                    processDirectory(file); // Recursive call to process subdirectories
+                } else if (file.getName().endsWith(settings.getInputExtension())) {
+                    clearTextArea();
+                    String fileContent = readFileContent(file);
+                    boolean isProcessed = processFile(file, directoryStructure, fileContent);
+                    processedFiles++;
+                    int progress = (int) ((processedFiles / (double) totalFiles) * 100);
+                    publish(progress);
 
-                        if (isProcessed && includeMetaCheckBox.isSelected()) {
-                            String metaContent = generateMetaContent(file.getParentFile(), file);
-                            if (!metaContent.isEmpty()) {
-                                String metaPrompt = settings.getPrompt() + "\n\n" +
-                                "The following is the meta content of other classes within the project to give more context. Please only use it as a reference for creating packages, imports and and an invoking other methods:\n" + metaContent;
-                                JavaConversion javaConversion = new JavaConversion(api, settings);
-                                javaConversion.convertCode(fileContent, metaPrompt, "");
-                            }
+                    if (isProcessed && includeMetaCheckBox.isSelected()) {
+                        String metaContent = generateMetaContent(file.getParentFile(), file);
+                        if (!metaContent.isEmpty()) {
+                            String metaPrompt = settings.getPrompt() + "\n\n" +
+                                    "The following is the meta content of other classes within the project to give more context. Please only use it as a reference for creating packages, imports and and an invoking other methods:\n"
+                                    + metaContent;
+                            JavaConversion javaConversion = new JavaConversion(api, settings);
+                            javaConversion.convertCode(fileContent, metaPrompt, "");
                         }
                     }
                 }
@@ -571,12 +573,12 @@ public class Reprogrammer extends JFrame {
 
         private int countFiles(File directory) {
             int count = 0;
-            File[] files = directory.listFiles((dir, name) -> name.endsWith(settings.getInputExtension()));
+            File[] files = directory.listFiles();
             if (files != null) {
                 for (File file : files) {
                     if (file.isDirectory()) {
                         count += countFiles(file);
-                    } else {
+                    } else if (file.getName().endsWith(settings.getInputExtension())) {
                         count++;
                     }
                 }
@@ -604,7 +606,6 @@ public class Reprogrammer extends JFrame {
                 }
             }
         }
-
         private boolean processFile(File file, String directoryStructure, String fileContent) {
             try {
                 JavaConversion javaConversion = new JavaConversion(api, settings);
@@ -614,7 +615,6 @@ public class Reprogrammer extends JFrame {
                 }
 
                 String fullPrompt = settings.getPrompt() + "\nProject structure:\n" + directoryStructure;
-
                 String convertedContent = javaConversion.convertCode(fileContent, fullPrompt, "");
                 if (convertedContent.trim().isEmpty()) {
                     logToTextArea("Initial conversion failed or resulted in empty content.");
@@ -971,7 +971,7 @@ public class Reprogrammer extends JFrame {
         String originalFileName = originalFile.getName();
         int lastDotIndex = originalFileName.lastIndexOf('.');
         String baseFileName = (lastDotIndex > 0) ? originalFileName.substring(0, lastDotIndex) : originalFileName;
-        String newFileName = baseFileName + outputExtension;
+        String newFileName = toCamelCase(baseFileName) + outputExtension;
 
         // Create the final output file path
         Path outputFilePath = outputSubfolder.resolve(newFileName);
@@ -984,6 +984,28 @@ public class Reprogrammer extends JFrame {
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+
+    static String toCamelCase(String input) {
+        if (StringUtils.isBlank(input)) {
+            return input;
+        }
+
+        // Check if the input is already in camel case
+        if (input.matches("([a-z]+[A-Z]+\\w+)+")) {
+            return input;
+        }
+
+        String[] parts = input.split("_");
+        StringBuilder camelCaseString = new StringBuilder();
+
+        for (String part : parts) {
+            if (!part.isEmpty()) {
+                camelCaseString.append(StringUtils.capitalize(part.toLowerCase()));
+            }
+        }
+
+        return camelCaseString.toString();
     }
 
     public static void main(String[] args) {
