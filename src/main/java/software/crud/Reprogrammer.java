@@ -521,6 +521,9 @@ public class Reprogrammer extends JFrame {
             int processedFiles = 0;
 
             if (files != null) {
+                // Generate the directory and file structure
+                String directoryStructure = generateDirectoryStructure(directory, settings.getInputExtension());
+
                 for (File file : files) {
                     if (isCancelled()) {
                         break;
@@ -538,7 +541,7 @@ public class Reprogrammer extends JFrame {
                     if (file.isDirectory()) {
                         processDirectory(file);
                     } else {
-                        processFile(file);
+                        processFile(file, directoryStructure);
                         processedFiles++;
                         int progress = (int) ((processedFiles / (double) totalFiles) * 100);
                         publish(progress);
@@ -560,6 +563,90 @@ public class Reprogrammer extends JFrame {
                 }
             }
             return count;
+        }
+
+        private String generateDirectoryStructure(File directory, String extension) {
+            StringBuilder structureBuilder = new StringBuilder();
+            appendDirectoryStructure(directory, extension, structureBuilder, "");
+            return structureBuilder.toString();
+        }
+
+        private void appendDirectoryStructure(File directory, String extension, StringBuilder structureBuilder,
+                String indent) {
+            structureBuilder.append(indent).append(directory.getName()).append("/\n");
+            File[] files = directory.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isDirectory()) {
+                        appendDirectoryStructure(file, extension, structureBuilder, indent + "  ");
+                    } else if (file.getName().endsWith(extension)) {
+                        structureBuilder.append(indent).append("  ").append(file.getName()).append("\n");
+                    }
+                }
+            }
+        }
+
+        private boolean processFile(File file, String directoryStructure) {
+            try {
+                JavaConversion javaConversion = new JavaConversion(api, settings);
+                String fileContent = readFileContent(file);
+                if (fileContent.isEmpty()) {
+                    System.out.println("File content is empty, skipping conversion.");
+                    return false;
+                }
+
+                String fullPrompt = settings.getPrompt() + "\nProject structure:\n" + directoryStructure;
+                String convertedContent = javaConversion.convertCode(fileContent, fullPrompt, "");
+                if (convertedContent.trim().isEmpty()) {
+                    System.out.println("Initial conversion failed or resulted in empty content.");
+                    return false;
+                }
+                updateTextArea(convertedContent);
+                saveConvertedFile(file, convertedContent);
+
+                int maxAttempts = 5;
+                boolean isConversionSuccessful = false;
+
+                for (int attempt = 0; attempt < maxAttempts && !isConversionSuccessful; attempt++) {
+                    List<SyntaxError> errors = checkSyntax(convertedContent);
+                    if (errors.isEmpty()) {
+                        saveConvertedFile(file, convertedContent);
+                        isConversionSuccessful = true;
+                    } else {
+                        System.out.println("Syntax errors found: " + errors);
+
+                        String aiResponse = api.generateText("Do errors need fixing?", 100, false);
+                        if (aiResponse.toLowerCase().contains("yes")) {
+                            String errorMessages = errors.stream()
+                                    .map(error -> "Line " + error.getLineNumber() + ": " + error.getMessage())
+                                    .collect(Collectors.joining("\n"));
+
+                            if (errorMessages.isEmpty()) {
+                                continue;
+                            }
+
+                            String fixPrompt = "Please output the entire file from the start without omitting anything fixing the following errors:\n"
+                                    + errorMessages;
+
+                            convertedContent = javaConversion.convertCode(convertedContent, fixPrompt, fileContent);
+                            updateTextArea(convertedContent);
+                            saveConvertedFile(file, convertedContent);
+                        } else {
+                            System.out.println("Based on AI response, no error fixing needed. Stopping attempts.");
+                            break;
+                        }
+                    }
+                }
+
+                if (!isConversionSuccessful) {
+                    System.out.println("Could not resolve all syntax errors after multiple attempts.");
+                }
+                return isConversionSuccessful;
+            } catch (Exception e) {
+                System.err.println("Error processing file: " + file.getAbsolutePath());
+                e.printStackTrace();
+                return false;
+            }
         }
     }
 
@@ -593,7 +680,7 @@ public class Reprogrammer extends JFrame {
 
     private void setupTopPanel() {
         JPanel topPanel = new JPanel(new GridLayout(2, 1, 10, 10));
-        
+
         JPanel fileSelectionPanel = new JPanel(new GridLayout(1, 4, 10, 10));
         fileSelectionPanel.setBorder(BorderFactory.createTitledBorder("Directories"));
 
@@ -615,7 +702,7 @@ public class Reprogrammer extends JFrame {
 
         JPanel languageSettingsPanel = new JPanel(new GridLayout(1, 4, 10, 10));
         languageSettingsPanel.setBorder(BorderFactory.createTitledBorder("Language Settings"));
-        
+
         languageComboBox = new JComboBox<>(settings.languageExtensions.keySet().toArray(new String[0]));
         languageComboBox.setSelectedItem(settings.getTargetLanguage());
         languageSettingsPanel.add(new JLabel("Language:"));
@@ -748,68 +835,6 @@ public class Reprogrammer extends JFrame {
             }
         }
         pauseButton.setText(isPaused ? "Resume" : "Pause");
-    }
-
-    private boolean processFile(File file) {
-        try {
-            JavaConversion javaConversion = new JavaConversion(api, settings);
-            String fileContent = readFileContent(file);
-            if (fileContent.isEmpty()) {
-                System.out.println("File content is empty, skipping conversion.");
-                return false;
-            }
-
-            String convertedContent = javaConversion.convertCode(fileContent, settings.getPrompt(), "");
-            if (convertedContent.trim().isEmpty()) {
-                System.out.println("Initial conversion failed or resulted in empty content.");
-                return false;
-            }
-            updateTextArea(convertedContent);
-            saveConvertedFile(file, convertedContent);
-
-            int maxAttempts = 5;
-            boolean isConversionSuccessful = false;
-
-            for (int attempt = 0; attempt < maxAttempts && !isConversionSuccessful; attempt++) {
-                List<SyntaxError> errors = checkSyntax(convertedContent);
-                if (errors.isEmpty()) {
-                    saveConvertedFile(file, convertedContent);
-                    isConversionSuccessful = true;
-                } else {
-                    System.out.println("Syntax errors found: " + errors);
-
-                    String aiResponse = api.generateText("Do errors need fixing?", 100, false);
-                    if (aiResponse.toLowerCase().contains("yes")) {
-                        String errorMessages = errors.stream()
-                                .map(error -> "Line " + error.getLineNumber() + ": " + error.getMessage())
-                                .collect(Collectors.joining("\n"));
-
-                        if (errorMessages.isEmpty()) {
-                            continue;
-                        }
-
-                        String fixPrompt = "Please output the entire file from the start without omitting anything fixing the following errors:\n"
-                                + errorMessages;
-
-                        convertedContent = javaConversion.convertCode(convertedContent, fixPrompt, fileContent);
-                        updateTextArea(convertedContent);
-                        saveConvertedFile(file, convertedContent);
-                    } else {
-                        System.out.println("Based on AI response, no error fixing needed. Stopping attempts.");
-                        break;
-                    }
-                }
-            }
-
-            if (!isConversionSuccessful) {
-                System.out.println("Could not resolve all syntax errors after multiple attempts.");
-            }
-            return isConversionSuccessful;
-        } catch (Exception e) {
-            System.err.println("Error processing file: " + file.getAbsolutePath());
-            e.printStackTrace();
-            return false;
-        }
     }
 
     private List<SyntaxError> checkSyntax(String javaCode) {
