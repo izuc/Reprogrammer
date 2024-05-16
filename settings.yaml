@@ -10,6 +10,10 @@ claude_api_version: '2023-06-01'
 claude_model: 'claude-3-sonnet-20240229'
 target_language: 'Java'
 max_tokens: 4096
-prompt: 'Please convert the following C# code to Java. Here are the guidelines: 1. Preserve the original structure and logic of the code. 2. Convert C# syntax to the equivalent Java syntax. 3. Handle necessary imports or package statements. 4. Use appropriate Java equivalents for C#-specific libraries or functions. 5. Maintain proper indentation and code formatting. Please provide the converted Java code in your <response>, enclosed within <code> tags. If you have any additional thoughts or suggestions, include them within <thoughts> tags. Thank you!'
-input_extension: '.cs'
+prompt: 'Please convert the following code to Java. Here are the guidelines: 1. Preserve the original structure and logic of the code. 2. Convert syntax to the equivalent Java syntax. 3. Handle necessary imports or package statements. 4. Use appropriate Java equivalents for language-specific libraries or functions. 5. Maintain proper indentation and code formatting. Please provide the converted Java code in your <response>, enclosed within <code> tags. If you have any additional thoughts or suggestions, include them within <thoughts> tags. Thank you!'
 output_extension: '.java'
+language_extensions:
+  C#: '.cs'
+  PHP: '.php'
+  Go: '.go'
+  JavaScript: '.js'

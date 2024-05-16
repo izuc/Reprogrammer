@@ -1,38 +1,31 @@
 package software.crud;
 
 import javax.swing.*;
-
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
+import java.util.*;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
-
 import com.github.javaparser.ParseResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import com.github.javaparser.ast.body.BodyDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
-
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
-
 import org.apache.commons.text.StringEscapeUtils;
 
 class Assistant {
@@ -177,7 +170,7 @@ class JavaConversion {
         requestBuilder.append(userPrompt).append("\n");
 
         if (!originalContent.isEmpty()) {
-            requestBuilder.append("Original C# code:\n").append(originalContent).append("\n");
+            requestBuilder.append("Original code:\n").append(originalContent).append("\n");
         }
 
         if (!code.isEmpty()) {
@@ -394,19 +387,19 @@ class SyntaxError {
 
 class LanguageSettings {
 
-    private final String targetLanguage;
-    private final int maxTokens;
-    private final String prompt;
-    private final String inputExtension;
-    private final String outputExtension;
+    private String targetLanguage;
+    private int maxTokens;
+    private String prompt;
+    private String outputExtension;
+    final Map<String, String> languageExtensions;
 
-    public LanguageSettings(String targetLanguage, int maxTokens, String prompt, String inputExtension,
-            String outputExtension) {
+    public LanguageSettings(String targetLanguage, int maxTokens, String prompt, String outputExtension,
+            Map<String, String> languageExtensions) {
         this.targetLanguage = targetLanguage;
         this.maxTokens = maxTokens;
         this.prompt = prompt;
-        this.inputExtension = inputExtension;
         this.outputExtension = outputExtension;
+        this.languageExtensions = languageExtensions;
     }
 
     public String getTargetLanguage() {
@@ -426,23 +419,44 @@ class LanguageSettings {
     }
 
     public String getInputExtension() {
-        return inputExtension;
+        return languageExtensions.get(targetLanguage);
+    }
+
+    public void setTargetLanguage(String targetLanguage) {
+        this.targetLanguage = targetLanguage;
+    }
+
+    public void setMaxTokens(int maxTokens) {
+        this.maxTokens = maxTokens;
+    }
+
+    public void setPrompt(String prompt) {
+        this.prompt = prompt;
+    }
+
+    public void setOutputExtension(String outputExtension) {
+        this.outputExtension = outputExtension;
     }
 }
 
 public class Reprogrammer extends JFrame {
-    private JTextArea convertedCodeTextArea;
+    private JTextArea codeTextArea;
+    private JTextArea logTextArea;
     private JTextField inputDirectoryPathField;
     private JTextField outputDirectoryPathField;
+    private JTextField promptTextField;
+    private JComboBox<String> languageComboBox;
     private JLabel statusLabel;
     private File inputFolder;
     private File outputFolder;
     private JProgressBar progressBar;
     private JLabel fileStatusLabel;
-    private JButton convertButton;
+    private JButton startButton;
+    private JButton pauseButton;
     private JFileChooser fileChooser = new JFileChooser();
     private LanguageSettings settings;
     private Assistant api;
+    private boolean isPaused = false;
     private static final Logger logger = LoggerFactory.getLogger(Reprogrammer.class);
 
     private class FileProcessor extends SwingWorker<Void, Integer> {
@@ -489,7 +503,8 @@ public class Reprogrammer extends JFrame {
                     System.err.println("Task interrupted.");
                 }
             }
-            convertButton.setEnabled(true);
+            startButton.setEnabled(true);
+            pauseButton.setEnabled(false);
         }
 
         @Override
@@ -509,6 +524,16 @@ public class Reprogrammer extends JFrame {
                 for (File file : files) {
                     if (isCancelled()) {
                         break;
+                    }
+                    if (isPaused) {
+                        synchronized (this) {
+                            try {
+                                wait();
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
+                        }
                     }
                     if (file.isDirectory()) {
                         processDirectory(file);
@@ -552,67 +577,106 @@ public class Reprogrammer extends JFrame {
 
         setIconImage(Toolkit.getDefaultToolkit().getImage(getClass().getResource("/icons/app.png")));
 
-        setupTextArea();
-        setupDirectoryPanel();
-        setupActionPanel();
+        setupTopPanel();
+        setupCenterPanel();
+        setupBottomPanel();
 
         pack();
-        setSize(600, 400);
+        setSize(1200, 800);
         setLocationRelativeTo(null);
     }
 
     private void addListeners() {
-        convertButton.addActionListener(this::convertFiles);
+        startButton.addActionListener(this::startConversion);
+        pauseButton.addActionListener(this::togglePause);
     }
 
-    private void setupTextArea() {
-        convertedCodeTextArea = new JTextArea();
-        convertedCodeTextArea.setEditable(false);
-        convertedCodeTextArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
-
-        JScrollPane scrollPane = new JScrollPane(convertedCodeTextArea);
-        scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
-        scrollPane.setPreferredSize(new Dimension(600, 400));
-
-        add(scrollPane, BorderLayout.CENTER);
-    }
-
-    private void setupDirectoryPanel() {
-        JPanel directoryPanel = new JPanel(new GridLayout(0, 3, 10, 10));
-        directoryPanel.setBorder(BorderFactory.createTitledBorder("Directories"));
+    private void setupTopPanel() {
+        JPanel topPanel = new JPanel(new GridLayout(2, 1, 10, 10));
+        
+        JPanel fileSelectionPanel = new JPanel(new GridLayout(1, 4, 10, 10));
+        fileSelectionPanel.setBorder(BorderFactory.createTitledBorder("Directories"));
 
         inputDirectoryPathField = new JTextField();
-        outputDirectoryPathField = new JTextField();
         JButton selectInputFolderButton = new JButton("Select Input Folder");
-        JButton selectOutputFolderButton = new JButton("Select Output Folder");
-
-        directoryPanel.add(new JLabel("Input Directory:"));
-        directoryPanel.add(inputDirectoryPathField);
-        directoryPanel.add(selectInputFolderButton);
-
-        directoryPanel.add(new JLabel("Output Directory:"));
-        directoryPanel.add(outputDirectoryPathField);
-        directoryPanel.add(selectOutputFolderButton);
-
         selectInputFolderButton.addActionListener(this::selectInputFolder);
-        selectOutputFolderButton.addActionListener(this::selectOutputFolder);
+        fileSelectionPanel.add(new JLabel("Input Directory:"));
+        fileSelectionPanel.add(inputDirectoryPathField);
+        fileSelectionPanel.add(selectInputFolderButton);
 
-        add(directoryPanel, BorderLayout.NORTH);
+        outputDirectoryPathField = new JTextField();
+        JButton selectOutputFolderButton = new JButton("Select Output Folder");
+        selectOutputFolderButton.addActionListener(this::selectOutputFolder);
+        fileSelectionPanel.add(new JLabel("Output Directory:"));
+        fileSelectionPanel.add(outputDirectoryPathField);
+        fileSelectionPanel.add(selectOutputFolderButton);
+
+        topPanel.add(fileSelectionPanel);
+
+        JPanel languageSettingsPanel = new JPanel(new GridLayout(1, 4, 10, 10));
+        languageSettingsPanel.setBorder(BorderFactory.createTitledBorder("Language Settings"));
+        
+        languageComboBox = new JComboBox<>(settings.languageExtensions.keySet().toArray(new String[0]));
+        languageComboBox.setSelectedItem(settings.getTargetLanguage());
+        languageSettingsPanel.add(new JLabel("Language:"));
+        languageSettingsPanel.add(languageComboBox);
+
+        promptTextField = new JTextField(settings.getPrompt());
+        languageSettingsPanel.add(new JLabel("Prompt:"));
+        languageSettingsPanel.add(promptTextField);
+
+        topPanel.add(languageSettingsPanel);
+
+        add(topPanel, BorderLayout.NORTH);
     }
 
-    private void setupActionPanel() {
-        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        convertButton = new JButton("Convert");
+    private void setupCenterPanel() {
+        JPanel centerPanel = new JPanel(new GridLayout(1, 2, 10, 10));
+
+        JPanel codePanel = new JPanel(new BorderLayout());
+        codePanel.setBorder(BorderFactory.createTitledBorder("Code"));
+        codeTextArea = new JTextArea();
+        codeTextArea.setEditable(false);
+        codeTextArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        JScrollPane codeScrollPane = new JScrollPane(codeTextArea);
+        codePanel.add(codeScrollPane, BorderLayout.CENTER);
+
+        JPanel logPanel = new JPanel(new BorderLayout());
+        logPanel.setBorder(BorderFactory.createTitledBorder("Log"));
+        logTextArea = new JTextArea();
+        logTextArea.setEditable(false);
+        logTextArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        JScrollPane logScrollPane = new JScrollPane(logTextArea);
+        logPanel.add(logScrollPane, BorderLayout.CENTER);
+
+        centerPanel.add(codePanel);
+        centerPanel.add(logPanel);
+
+        add(centerPanel, BorderLayout.CENTER);
+    }
+
+    private void setupBottomPanel() {
+        JPanel bottomPanel = new JPanel(new BorderLayout(10, 10));
+
+        JPanel progressPanel = new JPanel(new BorderLayout());
         statusLabel = new JLabel("Status: Idle");
         progressBar = new JProgressBar();
         fileStatusLabel = new JLabel("File Status: Idle");
+        progressPanel.add(statusLabel, BorderLayout.NORTH);
+        progressPanel.add(progressBar, BorderLayout.CENTER);
+        progressPanel.add(fileStatusLabel, BorderLayout.SOUTH);
 
-        actionPanel.add(convertButton);
-        actionPanel.add(statusLabel);
-        actionPanel.add(progressBar);
-        actionPanel.add(fileStatusLabel);
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        startButton = new JButton("Start");
+        pauseButton = new JButton("Pause");
+        pauseButton.setEnabled(false);
+        buttonPanel.add(startButton);
+        buttonPanel.add(pauseButton);
 
-        add(actionPanel, BorderLayout.SOUTH);
+        bottomPanel.add(buttonPanel, BorderLayout.WEST);
+        bottomPanel.add(progressPanel, BorderLayout.CENTER);
+
+        add(bottomPanel, BorderLayout.SOUTH);
     }
 
     private void selectInputFolder(ActionEvent e) {
@@ -640,12 +704,14 @@ public class Reprogrammer extends JFrame {
         return null;
     }
 
-    private void convertFiles(ActionEvent e) {
+    private void startConversion(ActionEvent e) {
         if (fileStatusLabel != null) {
             fileStatusLabel.setText("Processing...");
         }
         String inputFolderPath = inputDirectoryPathField.getText();
         String outputFolderPath = outputDirectoryPathField.getText();
+        String selectedLanguage = (String) languageComboBox.getSelectedItem();
+        String customPrompt = promptTextField.getText();
 
         if (inputFolderPath.isEmpty() || outputFolderPath.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please enter both input and output folder paths.", "Error",
@@ -662,12 +728,26 @@ public class Reprogrammer extends JFrame {
             return;
         }
 
-        convertButton.setEnabled(false);
+        settings.setTargetLanguage(selectedLanguage);
+        settings.setPrompt(customPrompt);
+
+        startButton.setEnabled(false);
+        pauseButton.setEnabled(true);
         fileStatusLabel.setText("Processing...");
         progressBar.setValue(0);
 
         FileProcessor processor = new FileProcessor(inputFolder);
         processor.execute();
+    }
+
+    private void togglePause(ActionEvent e) {
+        isPaused = !isPaused;
+        if (!isPaused) {
+            synchronized (this) {
+                notifyAll();
+            }
+        }
+        pauseButton.setText(isPaused ? "Resume" : "Pause");
     }
 
     private boolean processFile(File file) {
@@ -748,26 +828,17 @@ public class Reprogrammer extends JFrame {
     }
 
     private void updateTextArea(String content) {
-        convertedCodeTextArea.setText("");
-
-        StringBuilder formattedText = new StringBuilder();
-        String[] lines = content.split("\\r?\\n|\\r|\\n");
-        for (String line : lines) {
-            formattedText.append(line).append(System.lineSeparator());
-        }
-
-        convertedCodeTextArea.append(formattedText.toString());
-
-        convertedCodeTextArea.setCaretPosition(convertedCodeTextArea.getDocument().getLength());
+        codeTextArea.append(content);
+        codeTextArea.append(System.lineSeparator());
+        codeTextArea.setCaretPosition(codeTextArea.getDocument().getLength());
     }
 
     private void saveConvertedFile(File originalFile, String convertedContent) throws IOException {
         String outputExtension = settings.getOutputExtension();
-    
+
         // Correctly construct the relative path
         Path relativePath = inputFolder.toPath().relativize(originalFile.toPath());
         Path outputPath = outputFolder.toPath().resolve(relativePath);
-    
         // Ensure the directory structure exists
         Path parentDir = outputPath.getParent();
         if (parentDir != null && !Files.exists(parentDir)) {
@@ -778,7 +849,7 @@ public class Reprogrammer extends JFrame {
                 return;
             }
         }
-    
+
         // Change the extension of the output file
         String outputFileName = outputPath.getFileName().toString();
         int lastDotIndex = outputFileName.lastIndexOf('.');
@@ -787,11 +858,11 @@ public class Reprogrammer extends JFrame {
         } else {
             outputFileName += outputExtension;
         }
-    
+
         // Create the final output file path
         Path finalOutputPath = outputPath.resolveSibling(outputFileName);
         saveConvertedContent(finalOutputPath.toFile(), convertedContent);
-    } 
+    }
 
     private String readFileContent(File file) {
         StringBuilder contentBuilder = new StringBuilder();
@@ -808,10 +879,10 @@ public class Reprogrammer extends JFrame {
 
     private void saveConvertedContent(File originalFile, String convertedContent) {
         String outputExtension = settings.getOutputExtension();
-        
+
         // Construct the relative path
         Path relativePath = inputFolder.toPath().relativize(originalFile.toPath()).getParent();
-        
+
         // Ensure the directory structure exists
         Path outputSubfolder = outputFolder.toPath().resolve(relativePath);
         File subfolder = outputSubfolder.toFile();
@@ -819,24 +890,25 @@ public class Reprogrammer extends JFrame {
             System.err.println("Failed to create directory: " + subfolder);
             return;
         }
-    
+
         // Extract the base file name without its extension
         String originalFileName = originalFile.getName();
         int lastDotIndex = originalFileName.lastIndexOf('.');
         String baseFileName = (lastDotIndex > 0) ? originalFileName.substring(0, lastDotIndex) : originalFileName;
         String newFileName = baseFileName + outputExtension;
-    
+
         // Create the final output file path
         Path outputFilePath = outputSubfolder.resolve(newFileName);
         File outputFile = outputFilePath.toFile();
-    
+
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
             writer.write(convertedContent);
             api.clearHistory();
+            logTextArea.append("Converted: " + outputFile.getAbsolutePath() + System.lineSeparator());
         } catch (IOException e) {
             e.printStackTrace();
         }
-    }             
+    }
 
     public static void main(String[] args) {
         String settingsFilePath = "settings.yaml";
@@ -852,12 +924,15 @@ public class Reprogrammer extends JFrame {
             for (Map.Entry<String, Object> entry : settings.entrySet()) {
                 System.out.println(entry.getKey() + ": " + entry.getValue());
             }
+
+            @SuppressWarnings("unchecked")
+            Map<String, String> languageExtensions = (Map<String, String>) settings.get("language_extensions");
             LanguageSettings languageSettings = new LanguageSettings(
                     (String) settings.get("target_language"),
                     (Integer) settings.get("max_tokens"),
                     (String) settings.get("prompt"),
-                    (String) settings.get("input_extension"),
-                    (String) settings.get("output_extension"));
+                    (String) settings.get("output_extension"),
+                    languageExtensions);
 
             SwingUtilities.invokeLater(() -> {
                 Reprogrammer gui = new Reprogrammer(languageSettings);
@@ -877,8 +952,8 @@ public class Reprogrammer extends JFrame {
             validateSetting(settings, "target_language");
             validateSetting(settings, "max_tokens");
             validateSetting(settings, "prompt");
-            validateSetting(settings, "input_extension");
             validateSetting(settings, "output_extension");
+            validateSetting(settings, "language_extensions");
 
             return settings;
         }
