@@ -27,7 +27,7 @@ Follow these steps to start using Code Reprogrammer:
 
 1. **Launch the Application**: Execute `java -jar CodeReprogrammer.jar` from the command line, replacing `CodeReprogrammer.jar` with your jar file's name.
 2. **Configuration**: Set up the AI model source through the GUI, where you can select between OpenAI, custom AI, or Claude based on your configuration.
-3. **File Selection**: Choose the C# files you wish to convert.
+3. **File Selection**: Choose the files you wish to convert.
 4. **Start the Conversion**: Initiate the conversion by clicking the 'Convert' button. The application will display real-time status updates.
 
 ## Configuration
