@@ -99,6 +99,8 @@ class JavaConversion {
     private static final Logger logger = LoggerFactory.getLogger(JavaConversion.class);
     private final Assistant api;
     private final LanguageSettings settings;
+    private boolean redoEntireCode = false;
+    private static final int MAX_RETRIES = 3; // Define a max retry limit
 
     public JavaConversion(Assistant api, LanguageSettings settings) {
         this.api = api;
@@ -106,42 +108,58 @@ class JavaConversion {
     }
 
     public String convertCode(String inputCode, String prompt, String originalContent) throws IOException {
-        try {
-            logger.info("Starting " + prompt);
-            String requestBody = buildXMLRequestBody(
-                    prompt + " Respond only in XML format, outputting any code within <code></code>, and please include any thoughts in <thoughts></thoughts>.",
-                    inputCode, originalContent);
-            String response = api.generateText(requestBody, settings.getMaxTokens(), false);
-            logger.info("API response received: " + response);
+        int retryCount = 0;
+        while (retryCount < MAX_RETRIES) {
+            try {
+                logger.info("Starting " + prompt);
+                String requestBody = buildXMLRequestBody(
+                        prompt + " Respond only in XML format, outputting any code within <code></code>, and please include any thoughts in <thoughts></thoughts>.",
+                        inputCode, originalContent);
+                String response = api.generateText(requestBody, settings.getMaxTokens(), false);
+                logger.info("API response received: " + response);
 
-            StringBuilder fullConversion = new StringBuilder();
-            if (isResponseIncomplete(response)) {
-                while (isResponseIncomplete(response)) {
+                StringBuilder fullConversion = new StringBuilder();
+                if (isResponseIncomplete(response)) {
+                    while (isResponseIncomplete(response)) {
+                        String code = extractCode(response);
+                        if (!code.isEmpty()) {
+                            fullConversion.append(code);
+                            logger.info("Response incomplete. Requesting continuation...");
+                            requestBody = buildContinuationRequestBody(fullConversion.toString());
+                            logger.info("Requesting continuation with: " + requestBody);
+                            response = api.generateText(requestBody, settings.getMaxTokens(), false);
+                            code = extractCode(response);
+                            logger.info("Continuation response: " + code);
+                            fullConversion.append(code);
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
                     String code = extractCode(response);
                     if (!code.isEmpty()) {
                         fullConversion.append(code);
-                        logger.info("Response incomplete. Requesting continuation...");
-                        requestBody = buildContinuationRequestBody(fullConversion.toString());
-                        logger.info("Requesting continuation with: " + requestBody);
-                        response = api.generateText(requestBody, settings.getMaxTokens(), false);
-                        code = extractCode(response);
-                        logger.info("Continuation response: " + code);
-                        fullConversion.append(code);
-                    } else {
-                        break;
                     }
                 }
-            } else {
-                String code = extractCode(response);
-                if (!code.isEmpty()) {
-                    fullConversion.append(code);
+
+                if (redoEntireCode) {
+                    logger.info("Redoing the entire code conversion...");
+                    retryCount++;
+                    prompt = "Please redo the entire code conversion. " + prompt;
+                    continue;
                 }
+
+                return fullConversion.toString();
+            } catch (Exception e) {
+                logger.error("Error during code conversion: " + e.getMessage(), e);
+                throw e;
             }
-            return fullConversion.toString();
-        } catch (Exception e) {
-            logger.error("Error during code conversion: " + e.getMessage(), e);
-            throw e;
         }
+        throw new IOException("Failed to convert code after " + MAX_RETRIES + " attempts.");
+    }
+
+    public void setRedoEntireCode(boolean redoEntireCode) {
+        this.redoEntireCode = redoEntireCode;
     }
 
     private boolean isResponseIncomplete(String response) {
@@ -660,7 +678,13 @@ public class Reprogrammer extends JFrame {
                 }
 
                 if (!isConversionSuccessful) {
-                    logToTextArea("Could not resolve all syntax errors after multiple attempts.");
+                    logToTextArea(
+                            "Could not resolve all syntax errors after multiple attempts. Redoing the entire code conversion.");
+                    javaConversion.setRedoEntireCode(true);
+                    convertedContent = javaConversion.convertCode(fileContent, fullPrompt, "");
+                    saveConvertedFile(file, convertedContent);
+                    javaConversion.setRedoEntireCode(false);
+                    isConversionSuccessful = true;
                 }
                 return isConversionSuccessful;
             } catch (Exception e) {
@@ -976,7 +1000,11 @@ public class Reprogrammer extends JFrame {
 
         for (String part : parts) {
             if (!part.isEmpty()) {
-                camelCaseString.append(StringUtils.capitalize(part.toLowerCase()));
+                if (camelCaseString.length() == 0) {
+                    camelCaseString.append(part);
+                } else {
+                    camelCaseString.append(StringUtils.capitalize(part.toLowerCase()));
+                }
             }
         }
 
