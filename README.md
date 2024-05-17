@@ -12,21 +12,20 @@ Code Reprogrammer is a specialized Java-based desktop application designed to co
 ## Prerequisites
 
 Before using Code Reprogrammer, ensure the following components are installed:
-- Java Runtime Environment (JRE) 8 or higher.
+- Java Runtime Environment (JRE).
 - Appropriate API keys and access configurations for the chosen AI service.
 
 ## Installation
 
 1. Download the latest version of Code Reprogrammer from the GitHub repository.
 2. Unzip the downloaded file to your desired location.
-3. Verify Java installation on your system by executing `java -version` in the command line.
 
 ## Usage
 
 Follow these steps to start using Code Reprogrammer:
 
 1. **Launch the Application**: Execute `java -jar CodeReprogrammer.jar` from the command line, replacing `CodeReprogrammer.jar` with your jar file's name.
-2. **Configuration**: Set up the AI model source through the GUI, where you can select between OpenAI, custom AI, or Claude based on your configuration.
+2. **Configuration**: Please ensure that the `settings.yaml` file is in the same directory as the jar, setting your API keys and configuration.
 3. **File Selection**: Choose the files you wish to convert.
 4. **Start the Conversion**: Initiate the conversion by clicking the 'Convert' button. The application will display real-time status updates.
 
