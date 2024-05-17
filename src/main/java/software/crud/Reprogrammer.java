@@ -256,6 +256,39 @@ class JavaConversion {
     }
 }
 
+
+class ProgressState implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    private final File directory;
+    private final Map<String, String> convertedFilesMap;
+    private final int processedFiles;
+    private final int progress;
+
+    public ProgressState(File directory, Map<String, String> convertedFilesMap, int processedFiles, int progress) {
+        this.directory = directory;
+        this.convertedFilesMap = convertedFilesMap;
+        this.processedFiles = processedFiles;
+        this.progress = progress;
+    }
+
+    public File getDirectory() {
+        return directory;
+    }
+
+    public Map<String, String> getConvertedFilesMap() {
+        return convertedFilesMap;
+    }
+
+    public int getProcessedFiles() {
+        return processedFiles;
+    }
+
+    public int getProgress() {
+        return progress;
+    }
+}
+
 class ConversionResponse {
     private final String convertedCode;
     private final boolean isIncomplete;
@@ -519,29 +552,37 @@ public class Reprogrammer extends JFrame {
     private JLabel fileStatusLabel;
     private JButton startButton;
     private JButton pauseButton;
+    private JButton saveProgressButton;
+    private JButton loadProgressButton;
     private JCheckBox includeMetaCheckBox;
     private JCheckBox useAiFileNameCheckBox;
     private JFileChooser fileChooser = new JFileChooser();
     private LanguageSettings settings;
     private Assistant api;
     private boolean isPaused = false;
+    private Map<String, String> convertedFilesMap;
+    private int processedFiles;
+
     private static final Logger logger = LoggerFactory.getLogger(Reprogrammer.class);
 
     private class FileProcessor extends SwingWorker<Void, Integer> {
         private final File directory;
-
-        public FileProcessor(File directory) {
+        private final Map<String, String> convertedFilesMap;
+        private int processedFiles;
+    
+        public FileProcessor(File directory, Map<String, String> convertedFilesMap, int processedFiles) {
             this.directory = directory;
+            this.convertedFilesMap = convertedFilesMap != null ? convertedFilesMap : new HashMap<>();
+            this.processedFiles = processedFiles;
         }
-
+    
         @Override
         protected Void doInBackground() {
-            Map<String, String> convertedFilesMap = new HashMap<>();
             try {
                 logToTextArea("API call started.");
                 if (api.testApiConnection()) {
                     logToTextArea("API connection successful.");
-                    processDirectory(directory, convertedFilesMap);
+                    processDirectory(directory);
                     finalizeFileRenaming(convertedFilesMap);
                 } else {
                     logToTextArea("Failed to connect to the API.");
@@ -556,7 +597,7 @@ public class Reprogrammer extends JFrame {
             }
             return null;
         }
-
+    
         @Override
         protected void done() {
             if (!isCancelled()) {
@@ -576,7 +617,7 @@ public class Reprogrammer extends JFrame {
             startButton.setEnabled(true);
             pauseButton.setEnabled(false);
         }
-
+    
         @Override
         protected void process(List<Integer> chunks) {
             if (!chunks.isEmpty()) {
@@ -584,7 +625,7 @@ public class Reprogrammer extends JFrame {
                 progressBar.setValue(latestValue);
             }
         }
-
+    
         private String readFileContent(File file) {
             StringBuilder contentBuilder = new StringBuilder();
             try (BufferedReader br = new BufferedReader(new FileReader(file))) {
@@ -597,17 +638,16 @@ public class Reprogrammer extends JFrame {
             }
             return contentBuilder.toString();
         }
-
-        private void processDirectory(File directory, Map<String, String> convertedFilesMap) throws IOException {
+    
+        private void processDirectory(File directory) throws IOException {
             File[] files = directory.listFiles();
             if (files == null)
                 return;
-
+    
             int totalFiles = countFiles(directory);
-            int processedFiles = 0;
             String directoryStructure = generateDirectoryStructure(directory, settings.getInputExtension());
             Map<String, ClassIndex> classIndex = indexClasses(directory);
-
+    
             for (File file : files) {
                 if (isCancelled()) {
                     break;
@@ -623,16 +663,15 @@ public class Reprogrammer extends JFrame {
                     }
                 }
                 if (file.isDirectory()) {
-                    processDirectory(file, convertedFilesMap);
+                    processDirectory(file);
                 } else if (file.getName().endsWith(settings.getInputExtension())) {
                     clearTextArea();
                     String fileContent = readFileContent(file);
-                    boolean isProcessed = processFile(file, directoryStructure, fileContent, classIndex,
-                            convertedFilesMap);
+                    boolean isProcessed = processFile(file, directoryStructure, fileContent, classIndex);
                     processedFiles++;
                     int progress = (int) ((processedFiles / (double) totalFiles) * 100);
                     publish(progress);
-
+    
                     if (isProcessed && includeMetaCheckBox.isSelected()) {
                         String metaContent = generateMetaContent(file.getParentFile(), file);
                         if (!metaContent.isEmpty()) {
@@ -646,7 +685,7 @@ public class Reprogrammer extends JFrame {
                 }
             }
         }
-
+    
         private int countFiles(File directory) {
             int count = 0;
             File[] files = directory.listFiles();
@@ -661,15 +700,14 @@ public class Reprogrammer extends JFrame {
             }
             return count;
         }
-
+    
         private String generateDirectoryStructure(File directory, String extension) {
             StringBuilder structureBuilder = new StringBuilder();
             appendDirectoryStructure(directory, extension, structureBuilder, "");
             return structureBuilder.toString();
         }
-
-        private void appendDirectoryStructure(File directory, String extension, StringBuilder structureBuilder,
-                String indent) {
+    
+        private void appendDirectoryStructure(File directory, String extension, StringBuilder structureBuilder, String indent) {
             structureBuilder.append(indent).append(directory.getName()).append("/\n");
             File[] files = directory.listFiles();
             if (files != null) {
@@ -682,46 +720,43 @@ public class Reprogrammer extends JFrame {
                 }
             }
         }
-
-        private boolean processFile(File file, String directoryStructure, String fileContent,
-                Map<String, ClassIndex> classIndex, Map<String, String> convertedFilesMap) {
+    
+        private boolean processFile(File file, String directoryStructure, String fileContent, Map<String, ClassIndex> classIndex) {
             try {
                 JavaConversion javaConversion = new JavaConversion(api, settings);
                 if (fileContent.isEmpty()) {
                     logToTextArea("File content is empty, skipping conversion.");
                     return false;
                 }
-
+    
                 String fullPrompt = settings.getPrompt() + "\nProject structure:\n" + directoryStructure;
                 String convertedContent = javaConversion.convertCode(fileContent, fullPrompt, "");
                 if (convertedContent.trim().isEmpty()) {
                     logToTextArea("Initial conversion failed or resulted in empty content.");
                     return false;
                 }
-
+    
                 clearTextArea();
                 updateTextArea(convertedContent);
-
+    
                 // Update package and import statements
                 convertedContent = updatePackageAndImports(file, convertedContent, classIndex);
-
+    
                 // Check and fix syntax errors
                 convertedContent = checkAndFixSyntax(convertedContent);
-
+    
                 // Generate new file name using AI
                 String newFileName = file.getName();
                 if (useAiFileNameCheckBox.isSelected()) {
-                    newFileName = generateNewFileName(file.getName().replace(settings.getInputExtension(), ""),
-                            convertedContent); // Call with fileContent
+                    newFileName = generateNewFileName(file.getName().replace(settings.getInputExtension(), ""), convertedContent); // Call with fileContent
                 } else {
                     newFileName = toCamelCase(newFileName.replace(settings.getInputExtension(), ""));
                 }
-
+    
                 // Rename the class inside the file to match the new filename
                 String classNameWithoutExtension = file.getName().replace(settings.getInputExtension(), "");
-                convertedContent = replaceClassName(convertedContent, classNameWithoutExtension,
-                        newFileName.replace(settings.getOutputExtension(), ""));
-
+                convertedContent = replaceClassName(convertedContent, classNameWithoutExtension, newFileName.replace(settings.getOutputExtension(), ""));
+    
                 saveConvertedFile(file, convertedContent, newFileName);
                 convertedFilesMap.put(file.getAbsolutePath(), newFileName);
                 return true;
@@ -731,20 +766,20 @@ public class Reprogrammer extends JFrame {
                 return false;
             }
         }
-
+    
         static String toCamelCase(String input) {
             if (StringUtils.isBlank(input)) {
                 return input;
             }
-
+    
             // Check if the input is already in camel case
             if (input.matches("([a-z]+[A-Z]+\\w+)+")) {
                 return input;
             }
-
+    
             String[] parts = input.split("_");
             StringBuilder camelCaseString = new StringBuilder();
-
+    
             for (String part : parts) {
                 if (!part.isEmpty()) {
                     if (camelCaseString.length() == 0) {
@@ -754,10 +789,10 @@ public class Reprogrammer extends JFrame {
                     }
                 }
             }
-
+    
             return camelCaseString.toString();
         }
-
+    
         private Map<String, ClassIndex> indexClasses(File directory) {
             Map<String, ClassIndex> classIndex = new HashMap<>();
             File[] files = directory.listFiles();
@@ -782,8 +817,7 @@ public class Reprogrammer extends JFrame {
                                         newClassName = generateNewFileName(originalClassName, fileContent);
                                     }
                                     String filePath = file.getAbsolutePath();
-                                    classIndex.put(originalClassName,
-                                            new ClassIndex(originalClassName, newClassName, packageName, filePath));
+                                    classIndex.put(originalClassName, new ClassIndex(originalClassName, newClassName, packageName, filePath));
                                 }
                             }
                         }
@@ -792,30 +826,30 @@ public class Reprogrammer extends JFrame {
             }
             return classIndex;
         }
-
+    
         private String updatePackageAndImports(File file, String fileContent, Map<String, ClassIndex> classIndex) {
             JavaParser parser = new JavaParser();
             ParseResult<CompilationUnit> parseResult = parser.parse(fileContent);
             if (parseResult.isSuccessful() && parseResult.getResult().isPresent()) {
                 CompilationUnit cu = parseResult.getResult().get();
-
+    
                 // Ensure the package declaration is present
                 ClassIndex currentClassIndex = getCurrentClassIndex(file.getName(), classIndex);
                 if (currentClassIndex != null && !cu.getPackageDeclaration().isPresent()) {
                     cu.setPackageDeclaration(new PackageDeclaration(new Name(currentClassIndex.getPackageName())));
                 }
-
+    
                 cu.accept(new PackageAndImportVisitor(file, classIndex), null);
                 return cu.toString();
             }
             return fileContent;
         }
-
+    
         private ClassIndex getCurrentClassIndex(String currentFileName, Map<String, ClassIndex> classIndex) {
             String currentClassName = currentFileName.substring(0, currentFileName.lastIndexOf("."));
             return classIndex.get(currentClassName);
         }
-
+    
         private String checkAndFixSyntax(String fileContent) {
             JavaParser parser = new JavaParser();
             ParseResult<CompilationUnit> parseResult = parser.parse(fileContent);
@@ -826,33 +860,33 @@ public class Reprogrammer extends JFrame {
             }
             return fileContent;
         }
-
+    
         private String generateNewFileName(String currentClassName, String fileContent) {
             String prompt = "Create a new name for the Java class '" + currentClassName
                     + "'. It must be in English. Respond with XML, containing the new filename only. File Content: "
                     + fileContent;
             String response = api.generateText(prompt, settings.getMaxTokens(), false);
-
+    
             // Extracting the new file name from the AI response
             String newFileName = extractFromXml(response, "filename");
             if (newFileName == null || newFileName.isEmpty()) {
                 newFileName = currentClassName; // Fallback to the current class name if AI fails to generate a new name
             }
             newFileName = sanitizeFileName(newFileName.trim());
-
+    
             // Ensure the filename has the correct extension
             if (!newFileName.endsWith(settings.getOutputExtension())) {
                 newFileName += settings.getOutputExtension();
             }
-
+    
             // Remove the old extension if present
             if (newFileName.endsWith(settings.getInputExtension() + settings.getOutputExtension())) {
                 newFileName = newFileName.replace(settings.getInputExtension(), "");
             }
-
+    
             return newFileName;
         }
-
+    
         private String extractFromXml(String xml, String tagName) {
             String regex = "<" + tagName + ">(.+?)</" + tagName + ">";
             Pattern pattern = Pattern.compile(regex);
@@ -862,17 +896,17 @@ public class Reprogrammer extends JFrame {
             }
             return "";
         }
-
+    
         private String sanitizeFileName(String fileName) {
             // Remove invalid characters for a Windows file path
             return fileName.replaceAll("[<>:\"/\\|?*]", "").trim();
         }
-
+    
         private String replaceClassName(String content, String oldName, String newName) {
             String regex = "\\b" + Pattern.quote(oldName) + "\\b";
             return content.replaceAll(regex, newName);
         }
-
+    
         private void saveConvertedFile(File originalFile, String convertedContent, String newFileName)
                 throws IOException {
             // Extract the package name
@@ -882,24 +916,24 @@ public class Reprogrammer extends JFrame {
             if (matcher.find()) {
                 packageName = matcher.group(1).replace('.', File.separatorChar);
             }
-
+    
             // Determine the relative path and create necessary directories
             Path relativePath = inputFolder.toPath().relativize(originalFile.toPath()).getParent();
             if (relativePath == null) {
                 relativePath = Path.of("");
             }
-
+    
             Path outputSubfolder = outputFolder.toPath().resolve(relativePath).resolve(packageName);
             File subfolder = outputSubfolder.toFile();
             if (!subfolder.exists() && !subfolder.mkdirs()) {
                 logToTextArea("Failed to create directory: " + subfolder.getAbsolutePath());
                 return;
             }
-
+    
             // Save the converted file
             Path outputFilePath = outputSubfolder.resolve(newFileName);
             File outputFile = outputFilePath.toFile();
-
+    
             try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
                 writer.write(convertedContent);
                 api.clearHistory();
@@ -909,19 +943,14 @@ public class Reprogrammer extends JFrame {
                 e.printStackTrace();
             }
         }
-
+    
         private void finalizeFileRenaming(Map<String, String> convertedFilesMap) throws IOException {
             for (Map.Entry<String, String> entry : convertedFilesMap.entrySet()) {
                 File originalFile = new File(entry.getKey());
                 String newFileName = entry.getValue();
                 Path relativePath = inputFolder.toPath().relativize(originalFile.toPath()).getParent();
-                String newFilePath = outputFolder.toPath().resolve(relativePath).resolve(newFileName).toString(); // Use
-                                                                                                                  // output
-                                                                                                                  // directory
-                                                                                                                  // and
-                                                                                                                  // relative
-                                                                                                                  // path
-
+                String newFilePath = outputFolder.toPath().resolve(relativePath).resolve(newFileName).toString(); // Use output directory and relative path
+    
                 String fileContent = readFileContent(new File(newFilePath));
                 for (String oldFileName : convertedFilesMap.keySet()) {
                     String oldClassName = oldFileName.substring(oldFileName.lastIndexOf(File.separator) + 1)
@@ -929,25 +958,25 @@ public class Reprogrammer extends JFrame {
                     String newClassName = convertedFilesMap.get(oldFileName).replace(settings.getOutputExtension(), "");
                     fileContent = replaceClassName(fileContent, oldClassName, newClassName);
                 }
-
+    
                 // Ensure the package declaration is present
                 String packageName = getPackageNameFromFilePath(newFilePath);
                 if (!fileContent.startsWith("package ")) {
                     fileContent = "package " + packageName + ";\n\n" + fileContent;
                 }
-
+    
                 try (BufferedWriter writer = new BufferedWriter(new FileWriter(newFilePath))) {
                     writer.write(fileContent);
                     logToTextArea("Finalized: " + newFilePath);
                 }
             }
         }
-
+    
         private String getPackageNameFromFilePath(String filePath) {
             String relativePath = outputFolder.toPath().relativize(Path.of(filePath)).getParent().toString();
             return relativePath.replace(File.separatorChar, '.');
         }
-
+    
         private String generateMetaContent(File parentDirectory, File currentFile) throws IOException {
             StringBuilder metaContent = new StringBuilder();
             File[] files = parentDirectory.listFiles((dir, name) -> name.endsWith(settings.getInputExtension()));
@@ -964,7 +993,7 @@ public class Reprogrammer extends JFrame {
             }
             return metaContent.toString();
         }
-    }
+    }            
 
     private static class PackageAndImportVisitor extends VoidVisitorAdapter<Void> {
         private final File currentFile;
@@ -1012,6 +1041,8 @@ public class Reprogrammer extends JFrame {
     public Reprogrammer(LanguageSettings settings) {
         this.settings = settings;
         this.api = new Assistant();
+        this.convertedFilesMap = new HashMap<>();
+        this.processedFiles = 0;
         initComponents();
         addListeners();
     }
@@ -1035,6 +1066,8 @@ public class Reprogrammer extends JFrame {
     private void addListeners() {
         startButton.addActionListener(this::startConversion);
         pauseButton.addActionListener(this::togglePause);
+        saveProgressButton.addActionListener(this::saveProgress);
+        loadProgressButton.addActionListener(this::loadProgress);
     }
 
     private void setupTopPanel() {
@@ -1116,10 +1149,14 @@ public class Reprogrammer extends JFrame {
         startButton = new JButton("Start");
         pauseButton = new JButton("Pause");
         pauseButton.setEnabled(false);
+        saveProgressButton = new JButton("Save Progress");
+        loadProgressButton = new JButton("Load Progress");
         includeMetaCheckBox = new JCheckBox("Include Meta Content");
         useAiFileNameCheckBox = new JCheckBox("Use AI for File Names");
         buttonPanel.add(startButton);
         buttonPanel.add(pauseButton);
+        buttonPanel.add(saveProgressButton);
+        buttonPanel.add(loadProgressButton);
         buttonPanel.add(includeMetaCheckBox);
         buttonPanel.add(useAiFileNameCheckBox);
 
@@ -1163,6 +1200,9 @@ public class Reprogrammer extends JFrame {
         String selectedLanguage = (String) languageComboBox.getSelectedItem();
         String customPrompt = promptTextField.getText();
 
+        convertedFilesMap.clear();
+        processedFiles = 0;
+
         if (inputFolderPath.isEmpty() || outputFolderPath.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please enter both input and output folder paths.", "Error",
                     JOptionPane.ERROR_MESSAGE);
@@ -1186,7 +1226,7 @@ public class Reprogrammer extends JFrame {
         fileStatusLabel.setText("Processing...");
         progressBar.setValue(0);
 
-        FileProcessor processor = new FileProcessor(inputFolder);
+        FileProcessor processor = new FileProcessor(inputFolder, null, 0);
         processor.execute();
     }
 
@@ -1198,6 +1238,49 @@ public class Reprogrammer extends JFrame {
             }
         }
         pauseButton.setText(isPaused ? "Resume" : "Pause");
+    }
+
+    private void saveProgress(ActionEvent e) {
+        if (outputFolder == null) {
+            JOptionPane.showMessageDialog(this, "Output directory not selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        File progressFile = new File(outputFolder, "progress.ser");
+        try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(progressFile))) {
+            ProgressState state = new ProgressState(inputFolder, convertedFilesMap, processedFiles, progressBar.getValue());
+            out.writeObject(state);
+            logToTextArea("Progress saved.");
+        } catch (IOException ex) {
+            logToTextArea("Error saving progress: " + ex.getMessage());
+        }
+    }
+
+    private void loadProgress(ActionEvent e) {
+        if (outputFolder == null) {
+            JOptionPane.showMessageDialog(this, "Output directory not selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        File progressFile = new File(outputFolder, "progress.ser");
+        if (!progressFile.exists()) {
+            logToTextArea("No progress file found in the output directory.");
+            return;
+        }
+        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(progressFile))) {
+            ProgressState state = (ProgressState) in.readObject();
+            convertedFilesMap = state.getConvertedFilesMap();
+            processedFiles = state.getProcessedFiles();
+            int progress = state.getProgress();
+            progressBar.setValue(progress);
+            if (progress < 100) {
+                FileProcessor processor = new FileProcessor(inputFolder, convertedFilesMap, processedFiles);
+                processor.execute();
+                logToTextArea("Progress loaded and processing resumed.");
+            } else {
+                logToTextArea("Progress loaded. Processing already completed.");
+            }
+        } catch (IOException | ClassNotFoundException ex) {
+            logToTextArea("Error loading progress: " + ex.getMessage());
+        }
     }
 
     private void clearTextArea() {
