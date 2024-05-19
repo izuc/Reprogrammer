@@ -8,7 +8,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
-import java.util.Optional;
 import java.util.HashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.regex.Matcher;
@@ -27,8 +26,10 @@ import com.github.javaparser.ast.body.*;
 import com.github.javaparser.ast.expr.Name;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
+import java.nio.file.Files;
 
-import org.apache.commons.lang3.StringUtils;
+import java.nio.file.Paths;
+
 import org.apache.commons.text.StringEscapeUtils;
 
 class Assistant {
@@ -250,12 +251,11 @@ class JavaConversion {
     }
 
     public String generateMetaContent(String fileContent) throws IOException {
-        String prompt = "Generate a summary of the method signatures and class definitions from the following code. " +
+        String prompt = "Generate a short summary of the method signatures and class definitions from the following code. " +
                 "Do not include the method bodies. Only output the signatures and class definitions.";
         return api.generateText(prompt + "\n" + fileContent, settings.getMaxTokens(), false);
     }
 }
-
 
 class ProgressState implements Serializable {
     private static final long serialVersionUID = 1L;
@@ -264,12 +264,17 @@ class ProgressState implements Serializable {
     private final Map<String, String> convertedFilesMap;
     private final int processedFiles;
     private final int progress;
+    private final StringBuilder metaContent;
+    private final StringBuilder combinedSmallFilesContent;
 
-    public ProgressState(File directory, Map<String, String> convertedFilesMap, int processedFiles, int progress) {
+    public ProgressState(File directory, Map<String, String> convertedFilesMap, int processedFiles, int progress,
+            StringBuilder metaContent, StringBuilder combinedSmallFilesContent) {
         this.directory = directory;
         this.convertedFilesMap = convertedFilesMap;
         this.processedFiles = processedFiles;
         this.progress = progress;
+        this.metaContent = metaContent;
+        this.combinedSmallFilesContent = combinedSmallFilesContent;
     }
 
     public File getDirectory() {
@@ -286,6 +291,14 @@ class ProgressState implements Serializable {
 
     public int getProgress() {
         return progress;
+    }
+
+    public StringBuilder getMetaContent() {
+        return metaContent;
+    }
+
+    public StringBuilder getCombinedSmallFilesContent() {
+        return combinedSmallFilesContent;
     }
 }
 
@@ -556,48 +569,67 @@ public class Reprogrammer extends JFrame {
     private JButton loadProgressButton;
     private JCheckBox includeMetaCheckBox;
     private JCheckBox useAiFileNameCheckBox;
+    private JCheckBox combineSmallFilesCheckBox; // New checkbox
     private JFileChooser fileChooser = new JFileChooser();
     private LanguageSettings settings;
     private Assistant api;
     private boolean isPaused = false;
     private Map<String, String> convertedFilesMap;
     private int processedFiles;
-
-    private static final Logger logger = LoggerFactory.getLogger(Reprogrammer.class);
+    private StringBuilder metaContent;
+    private StringBuilder combinedSmallFilesContent;
 
     private class FileProcessor extends SwingWorker<Void, Integer> {
         private final File directory;
         private final Map<String, String> convertedFilesMap;
         private int processedFiles;
-    
-        public FileProcessor(File directory, Map<String, String> convertedFilesMap, int processedFiles) {
+        private StringBuilder metaContent;
+        private StringBuilder combinedSmallFilesContent;
+
+        public FileProcessor(File directory, Map<String, String> convertedFilesMap, int processedFiles,
+                StringBuilder metaContent, StringBuilder combinedSmallFilesContent) {
             this.directory = directory;
             this.convertedFilesMap = convertedFilesMap != null ? convertedFilesMap : new HashMap<>();
             this.processedFiles = processedFiles;
+            this.metaContent = metaContent;
+            this.combinedSmallFilesContent = combinedSmallFilesContent;
         }
-    
+
         @Override
         protected Void doInBackground() {
             try {
                 logToTextArea("API call started.");
                 if (api.testApiConnection()) {
                     logToTextArea("API connection successful.");
-                    processDirectory(directory);
-                    finalizeFileRenaming(convertedFilesMap);
+                    Map<String, ClassIndex> classIndex = indexClasses(directory);
+                    processDirectory(directory, classIndex);
+                    replaceClassNamesAcrossAllFiles(directory, classIndex);
+
+                    File outputDirectory = new File(outputDirectoryPathField.getText());
+                    if (outputDirectory.exists()) {
+                        replaceClassNamesAcrossAllFiles(outputDirectory, classIndex);
+                    }
+
+                    // Save combined small files
+                    if (combineSmallFilesCheckBox.isSelected()) {
+                        saveCombinedSmallFiles(classIndex);
+                    }
                 } else {
                     logToTextArea("Failed to connect to the API.");
                     cancel(true);
                 }
             } catch (IOException e) {
                 logToTextArea("IO Exception: " + e.getMessage());
+                e.printStackTrace();
                 cancel(true);
             } catch (Exception e) {
                 logToTextArea("General Exception: " + e.getMessage());
+                e.printStackTrace();
                 cancel(true);
             }
             return null;
         }
-    
+
         @Override
         protected void done() {
             if (!isCancelled()) {
@@ -609,15 +641,17 @@ public class Reprogrammer extends JFrame {
                     Throwable cause = e.getCause();
                     logToTextArea("Error during processing: " + cause.getMessage());
                     JOptionPane.showMessageDialog(null, "Error: " + cause.getMessage());
+                    cause.printStackTrace();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     logToTextArea("Task interrupted.");
+                    e.printStackTrace();
                 }
             }
             startButton.setEnabled(true);
             pauseButton.setEnabled(false);
         }
-    
+
         @Override
         protected void process(List<Integer> chunks) {
             if (!chunks.isEmpty()) {
@@ -625,33 +659,268 @@ public class Reprogrammer extends JFrame {
                 progressBar.setValue(latestValue);
             }
         }
-    
-        private String readFileContent(File file) {
-            StringBuilder contentBuilder = new StringBuilder();
-            try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-                String currentLine;
-                while ((currentLine = br.readLine()) != null) {
-                    contentBuilder.append(currentLine).append("\n");
+
+        private Map<String, ClassIndex> indexClasses(File directory) throws IOException {
+            Map<String, ClassIndex> classIndex = new HashMap<>();
+            for (File file : directory.listFiles()) {
+                if (file.isDirectory()) {
+                    logToTextArea("Indexing classes in directory: " + file.getAbsolutePath());
+                    classIndex.putAll(indexClasses(file));
+                } else if (file.getName().endsWith(settings.getInputExtension())) {
+                    logToTextArea("Indexing classes in file: " + file.getAbsolutePath());
+                    String fileContent = readFileContent(file);
+                    String fileName = file.getName();
+                    String originalClassName = fileName.substring(0, fileName.lastIndexOf('.'));
+                    String newClassName = originalClassName;
+                    if (useAiFileNameCheckBox.isSelected()) {
+                        newClassName = generateNewFileName(originalClassName, fileContent);
+                    }
+                    String packageName = extractPackageName(fileContent, settings.getPackagePattern());
+                    String filePath = file.getAbsolutePath();
+                    ClassIndex classIndexEntry = new ClassIndex(originalClassName, newClassName, packageName, filePath);
+                    classIndex.put(originalClassName, classIndexEntry);
+                    logToTextArea("Added to classIndex: " + originalClassName + " -> " + newClassName + " in package "
+                            + packageName);
                 }
-            } catch (IOException e) {
-                logger.error("Error reading file content: {}", file.getAbsolutePath(), e);
             }
-            return contentBuilder.toString();
+            return classIndex;
         }
-    
-        private void processDirectory(File directory) throws IOException {
+
+        private String extractPackageName(String content, String packagePattern) {
+            Pattern pattern = Pattern.compile(packagePattern);
+            Matcher matcher = pattern.matcher(content);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+            return "";
+        }
+
+        private boolean processFile(File file, String fileContent, Map<String, ClassIndex> classIndex, String originalFileName) {
+            try {
+                logToTextArea("Processing file: " + file.getAbsolutePath());
+                JavaConversion javaConversion = new JavaConversion(api, settings);
+                if (fileContent.isEmpty()) {
+                    logToTextArea("File content is empty, skipping conversion.");
+                    return false;
+                }
+        
+                // Generate directory structure and meta content
+                String directoryStructure = generateDirectoryStructure(file.getParentFile(), settings.getInputExtension());
+                String fileMetaContent = generateMetaContent(file.getParentFile(), file);
+        
+                String fullPrompt = settings.getPrompt() + "\nProject structure:\n" + directoryStructure
+                        + "The following is the meta content of other classes within the project to give more context. Please only use it as a reference for creating packages, imports and invoking other methods:\n"
+                        + fileMetaContent;
+                String convertedContent = javaConversion.convertCode(fileContent, fullPrompt, "");
+                if (convertedContent.trim().isEmpty()) {
+                    logToTextArea("Initial conversion failed or resulted in empty content.");
+                    return false;
+                }
+        
+                clearTextArea();
+                updateTextArea(convertedContent);
+        
+                // Update package and import statements
+                logToTextArea("Updating package and import statements...");
+                convertedContent = updatePackageAndImports(file, convertedContent, classIndex);
+        
+                // Extract the original class/struct name or fallback to file name
+                logToTextArea("Extracting original class name...");
+                String originalClassName = extractOriginalClassName(fileContent, originalFileName);
+                logToTextArea("Extracted original class name: " + originalClassName);
+        
+                // Always use the original class name unless AI file naming is enabled
+                logToTextArea("Retrieving new class name from classIndex...");
+                String newClassName = originalClassName; // Default to the original class name
+                if (useAiFileNameCheckBox.isSelected()) {
+                    newClassName = classIndex.containsKey(originalClassName)
+                            ? classIndex.get(originalClassName).getNewClassName()
+                            : generateNewFileName(originalClassName, fileContent); // Use AI to generate new name only if option is selected
+                }
+                logToTextArea("Final class name to use: " + newClassName);
+        
+                // Replace class names in content only if AI file naming is enabled
+                logToTextArea("Replacing class names in content...");
+                if (useAiFileNameCheckBox.isSelected()) {
+                    convertedContent = replaceClassName(convertedContent, originalClassName, newClassName);
+                }
+                logToTextArea("Class names replaced in content.");
+        
+                // Check and fix syntax errors
+                logToTextArea("Checking and fixing syntax errors...");
+                convertedContent = checkAndFixSyntax(convertedContent);
+        
+                // Ensure the package declaration is present and correct
+                logToTextArea("Extracting package name from file path...");
+                String packageName = getPackageNameFromFilePath(file.getAbsolutePath());
+                logToTextArea("Package name: " + packageName);
+                Pattern packagePattern = Pattern.compile("^\\s*package\\s+.+;", Pattern.MULTILINE);
+                Matcher packageMatcher = packagePattern.matcher(convertedContent);
+                if (!packageMatcher.find() && !packageName.isEmpty()) {
+                    convertedContent = "package " + packageName + ";\n\n" + convertedContent;
+                }
+        
+                // Generate the final file name with the correct extension
+                logToTextArea("Generating final file name...");
+                String newFileName = newClassName + settings.getOutputExtension();
+                logToTextArea("Generated new file name: " + newFileName);
+        
+                saveConvertedFile(file, convertedContent, newFileName);
+                convertedFilesMap.put(file.getAbsolutePath(), newFileName);
+                return true;
+            } catch (Exception e) {
+                logToTextArea("Error processing file: " + file.getAbsolutePath() + " - " + e.getMessage());
+                e.printStackTrace();
+                return false;
+            }
+        }                               
+
+        private String getPackageNameFromFilePath(String filePath) {
+            Path inputDirPath = Paths.get(inputFolder.getAbsolutePath());
+            Path fullPath = Paths.get(filePath).normalize();
+            Path relativePath = inputDirPath.relativize(fullPath.getParent()).normalize();
+            logToTextArea("Normalized relative path: " + relativePath.toString());
+
+            // Convert the relative path to package name format (excluding the file name)
+            String packageName = relativePath.toString().replace(File.separatorChar, '.');
+
+            // Remove leading, trailing, and consecutive dots
+            packageName = packageName.replaceAll("^\\.|\\.$", "");
+            packageName = packageName.replaceAll("\\.{2,}", ".");
+
+            return packageName.isEmpty() ? "" : packageName;
+        }
+
+        private String checkAndFixSyntax(String fileContent) {
+            JavaParser parser = new JavaParser();
+            ParseResult<CompilationUnit> parseResult = parser.parse(fileContent);
+            if (parseResult.isSuccessful() && parseResult.getResult().isPresent()) {
+                CompilationUnit cu = parseResult.getResult().get();
+                SyntaxChecker syntaxChecker = new SyntaxChecker(api, settings);
+                return syntaxChecker.checkAndFixSyntax(cu);
+            }
+            return fileContent;
+        }
+
+        private String updatePackageAndImports(File file, String fileContent, Map<String, ClassIndex> classIndex) {
+            JavaParser parser = new JavaParser();
+            ParseResult<CompilationUnit> parseResult = parser.parse(fileContent);
+            if (parseResult.isSuccessful() && parseResult.getResult().isPresent()) {
+                CompilationUnit cu = parseResult.getResult().get();
+
+                // Ensure the package declaration is present
+                ClassIndex currentClassIndex = getCurrentClassIndex(file.getName(), classIndex);
+                if (currentClassIndex != null && !cu.getPackageDeclaration().isPresent()) {
+                    cu.setPackageDeclaration(new PackageDeclaration(new Name(currentClassIndex.getPackageName())));
+                }
+
+                cu.accept(new PackageAndImportVisitor(file, classIndex), null);
+                return cu.toString();
+            }
+            return fileContent;
+        }
+
+        private ClassIndex getCurrentClassIndex(String currentFileName, Map<String, ClassIndex> classIndex) {
+            String currentClassName = currentFileName.substring(0, currentFileName.lastIndexOf("."));
+            return classIndex.get(currentClassName);
+        }
+
+        private String generateNewFileName(String currentClassName, String fileContent) {
+            String prompt = "Create a new name for the Java class '" + currentClassName
+                    + "'. It must be in English. Respond with XML, containing the new <filename>{filename}</filename> only. File Content: "
+                    + fileContent;
+            String response = api.generateText(prompt, settings.getMaxTokens(), false);
+
+            // Extracting the new file name from the AI response
+            String newFileName = extractFromXml(response, "filename");
+            if (newFileName == null || newFileName.isEmpty()) {
+                newFileName = currentClassName; // Fallback to the current class name if AI fails to generate a new name
+            }
+            newFileName = sanitizeFileName(newFileName.trim());
+
+            // Remove any trailing extension if present
+            int extensionIndex = newFileName.lastIndexOf('.');
+            if (extensionIndex != -1) {
+                newFileName = newFileName.substring(0, extensionIndex);
+            }
+
+            return newFileName;
+        }
+
+        private String extractFromXml(String xml, String tagName) {
+            String regex = "<" + tagName + ">(.+?)</" + tagName + ">";
+            Pattern pattern = Pattern.compile(regex);
+            Matcher matcher = pattern.matcher(xml);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+            return "";
+        }
+
+        private String sanitizeFileName(String fileName) {
+            // Remove invalid characters for a Windows file path
+            return fileName.replaceAll("[<>:\"/\\|?*]", "").trim();
+        }
+
+        private String replaceClassName(String content, String oldName, String newName) {
+            logToTextArea("Replacing class name: " + oldName + " with " + newName);
+            String regex = "\\b" + Pattern.quote(oldName) + "\\b";
+            String updatedContent = content.replaceAll(regex, newName);
+            logToTextArea("Class name replacement complete.");
+            return updatedContent;
+        }
+
+        private void saveConvertedFile(File originalFile, String convertedContent, String newFileName)
+                throws IOException {
+            logToTextArea("Saving converted file: " + newFileName);
+
+            // Extract the package name
+            String packageName = getPackageNameFromFilePath(originalFile.getPath());
+            logToTextArea("Extracted package name: " + packageName);
+
+            // Create the appropriate folder structure
+            Path outputDirPath = outputFolder.toPath();
+            if (!packageName.isEmpty()) {
+                Path packagePath = Paths.get(packageName.replace('.', File.separatorChar));
+                outputDirPath = outputDirPath.resolve(packagePath);
+            }
+            File outputDir = outputDirPath.toFile();
+            if (!outputDir.exists() && !outputDir.mkdirs()) {
+                logToTextArea("Failed to create output directory: " + outputDir.getAbsolutePath());
+                return;
+            }
+
+            // Save the converted file
+            Path outputFilePath = outputDirPath.resolve(newFileName);
+            if (!newFileName.endsWith(".java")) {
+                outputFilePath = Path.of(outputFilePath.toString() + ".java");
+            }
+            File outputFile = outputFilePath.toFile();
+
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
+                writer.write(convertedContent);
+                api.clearHistory();
+                logToTextArea("Converted and saved: " + outputFile.getAbsolutePath());
+            } catch (IOException e) {
+                logToTextArea("Error writing to file: " + outputFile.getAbsolutePath());
+                e.printStackTrace();
+            }
+        }
+
+        private void processDirectory(File directory, Map<String, ClassIndex> classIndex) throws IOException {
+            if (!directory.toPath().startsWith(inputFolder.toPath())) {
+                return;
+            }
+
             File[] files = directory.listFiles();
             if (files == null)
                 return;
-    
+
             int totalFiles = countFiles(directory);
-            String directoryStructure = generateDirectoryStructure(directory, settings.getInputExtension());
-            Map<String, ClassIndex> classIndex = indexClasses(directory);
-    
+
             for (File file : files) {
-                if (isCancelled()) {
+                if (isCancelled())
                     break;
-                }
                 if (isPaused) {
                     synchronized (this) {
                         try {
@@ -663,29 +932,203 @@ public class Reprogrammer extends JFrame {
                     }
                 }
                 if (file.isDirectory()) {
-                    processDirectory(file);
-                } else if (file.getName().endsWith(settings.getInputExtension())) {
+                    processDirectory(file, classIndex);
+                } else if (file.getName().endsWith(settings.getInputExtension())
+                        && !file.getName().contains("Operations")) {
                     clearTextArea();
                     String fileContent = readFileContent(file);
-                    boolean isProcessed = processFile(file, directoryStructure, fileContent, classIndex);
-                    processedFiles++;
-                    int progress = (int) ((processedFiles / (double) totalFiles) * 100);
-                    publish(progress);
-    
-                    if (isProcessed && includeMetaCheckBox.isSelected()) {
-                        String metaContent = generateMetaContent(file.getParentFile(), file);
-                        if (!metaContent.isEmpty()) {
-                            String metaPrompt = settings.getPrompt() + "\n\n" +
-                                    "The following is the meta content of other classes within the project to give more context. Please only use it as a reference for creating packages, imports and invoking other methods:\n"
-                                    + metaContent;
-                            JavaConversion javaConversion = new JavaConversion(api, settings);
-                            javaConversion.convertCode(fileContent, metaPrompt, "");
+                    if (file.length() <= 10 * 1024 && combineSmallFilesCheckBox.isSelected()) {
+                        combineSmallFile(fileContent, file.getName(), classIndex);
+                    } else {
+                        boolean isProcessed = processFile(file, fileContent, classIndex, file.getName());
+                        processedFiles++;
+                        int progress = (int) ((processedFiles / (double) totalFiles) * 100);
+                        publish(progress);
+
+                        if (isProcessed && includeMetaCheckBox.isSelected()) {
+                            metaContent.append(generateMetaContent(file.getParentFile(), file));
                         }
                     }
                 }
             }
+
+            logToTextArea("Class index before replaceClassNamesAcrossAllFiles:");
+            for (Map.Entry<String, ClassIndex> entry : classIndex.entrySet()) {
+                String className = entry.getKey();
+                ClassIndex classIndexValue = entry.getValue();
+                logToTextArea("- Class: " + className);
+                logToTextArea("  Original Name: " + classIndexValue.getOriginalClassName());
+                logToTextArea("  New Name: " + classIndexValue.getNewClassName());
+                logToTextArea("  Package: " + classIndexValue.getPackageName());
+                logToTextArea("  File Path: " + classIndexValue.getFilePath());
+            }
+            replaceClassNamesAcrossAllFiles(directory, classIndex);
         }
-    
+
+        private void replaceClassNamesAcrossAllFiles(File directory, Map<String, ClassIndex> classIndex) throws IOException {
+            boolean changesMade;
+            int iterationCount = 0;
+            File outputDirectory = new File(outputDirectoryPathField.getText());
+            if (outputDirectory.exists()) {
+                do {
+                    changesMade = false;
+                    iterationCount++;
+                    logToTextArea("Starting iteration " + iterationCount + " for class name replacements in output directory.");
+        
+                    changesMade = processDirectoryForReplacements(outputDirectory, classIndex) || changesMade;
+        
+                    logToTextArea("Completed iteration " + iterationCount + " for class name replacements in output directory.");
+                } while (changesMade);
+        
+                logToTextArea("Completed class name replacements after " + iterationCount + " iterations in output directory.");
+            }
+        }
+        
+        private boolean processDirectoryForReplacements(File directory, Map<String, ClassIndex> classIndex) throws IOException {
+            boolean changesMade = false;
+            File[] files = directory.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isDirectory()) {
+                        changesMade = processDirectoryForReplacements(file, classIndex) || changesMade;
+                    } else if (file.getName().endsWith(settings.getOutputExtension())) {
+                        changesMade = replaceClassNamesInFile(file, classIndex) || changesMade;
+                    }
+                }
+            }
+            return changesMade;
+        }
+        
+        private boolean replaceClassNamesInFile(File file, Map<String, ClassIndex> classIndex) throws IOException {
+            String fileContent = readFileContent(file);
+            String updatedContent = fileContent;
+            boolean modified = false;
+        
+            for (ClassIndex ci : classIndex.values()) {
+                String oldClassName = ci.getOriginalClassName();
+                String newClassName = ci.getNewClassName();
+                String regex = "\\b" + Pattern.quote(oldClassName) + "\\b";
+                String tempContent = updatedContent.replaceAll(regex, newClassName);
+                if (!tempContent.equals(updatedContent)) {
+                    logToTextArea("Replacing " + oldClassName + " with " + newClassName + " in " + file.getName());
+                    updatedContent = tempContent;
+                    modified = true;
+                }
+            }
+        
+            if (modified) {
+                saveFile(file, updatedContent);
+                logToTextArea("Updated file saved: " + file.getAbsolutePath());
+            }
+        
+            return modified;
+        }
+
+        private void combineSmallFile(String content, String fileName, Map<String, ClassIndex> classIndex) {
+            try {
+                logToTextArea("Combining small file: " + fileName);
+                JavaConversion javaConversion = new JavaConversion(api, settings);
+                String convertedContent = javaConversion.convertCode(content, settings.getPrompt(), "");
+                
+                // Replace class names in the combined content
+                for (ClassIndex ci : classIndex.values()) {
+                    String oldClassName = ci.getOriginalClassName();
+                    String newClassName = ci.getNewClassName();
+                    String regex = "\\b" + Pattern.quote(oldClassName) + "\\b";
+                    convertedContent = convertedContent.replaceAll(regex, newClassName);
+                }
+                
+                combinedSmallFilesContent.append("// File: ").append(fileName).append("\n");
+                combinedSmallFilesContent.append(convertedContent).append("\n\n");
+            } catch (IOException e) {
+                logToTextArea("Error combining small file: " + fileName + " - " + e.getMessage());
+                e.printStackTrace();
+            }
+        }
+
+        private String extractPrimaryClassName() {
+            // Assuming the primary class name is the first class name in the combined
+            // content
+            Pattern pattern = Pattern.compile("\\b(class|enum|interface)\\s+(\\w+)");
+            Matcher matcher = pattern.matcher(combinedSmallFilesContent);
+            if (matcher.find()) {
+                return matcher.group(2); // Group 2 contains the class name
+            }
+            return "CombinedSmallFiles"; // Default name if no class name is found
+        }
+
+        private void saveCombinedSmallFiles(Map<String, ClassIndex> classIndex) throws IOException {
+            if (combinedSmallFilesContent.length() > 0) {
+                // Use classIndex to extract the package name
+                String packageName = "";
+                if (!classIndex.isEmpty()) {
+                    ClassIndex firstClassIndex = classIndex.values().iterator().next();
+                    packageName = firstClassIndex.getPackageName();
+                }
+                String primaryClassName = extractPrimaryClassName();
+                String combinedFileName = primaryClassName + ".java";
+        
+                // Create the appropriate folder structure
+                Path outputDirPath = outputFolder.toPath();
+                if (!packageName.isEmpty()) {
+                    Path packagePath = Paths.get(packageName.replace('.', File.separatorChar));
+                    outputDirPath = outputDirPath.resolve(packagePath);
+                }
+                File outputDir = outputDirPath.toFile();
+                if (!outputDir.exists() && !outputDir.mkdirs()) {
+                    logToTextArea("Failed to create output directory: " + outputDir.getAbsolutePath());
+                    return;
+                }
+        
+                // Ensure the package declaration is included
+                String combinedContent = combinedSmallFilesContent.toString();
+                if (!packageName.isEmpty() && !combinedContent.contains("package " + packageName)) {
+                    combinedContent = "package " + packageName + ";\n\n" + combinedContent;
+                }
+        
+                // Convert the combined content
+                logToTextArea("Converting combined small files content...");
+                JavaConversion javaConversion = new JavaConversion(api, settings);
+                String convertedCombinedContent = javaConversion.convertCode(combinedContent,
+                        "Merge this Java code together, outputting a public class with everything embedded.", "");
+        
+                // Replace class names in the combined content
+                for (ClassIndex ci : classIndex.values()) {
+                    String oldClassName = ci.getOriginalClassName();
+                    String newClassName = ci.getNewClassName();
+                    String regex = "\\b" + Pattern.quote(oldClassName) + "\\b";
+                    convertedCombinedContent = convertedCombinedContent.replaceAll(regex, newClassName);
+                }
+        
+                // Save the combined content to the output directory with the new name
+                File combinedFile = new File(outputDir, combinedFileName);
+                try (BufferedWriter writer = new BufferedWriter(new FileWriter(combinedFile))) {
+                    writer.write(convertedCombinedContent);
+                }
+                logToTextArea("Combined small files saved to: " + combinedFile.getAbsolutePath());
+            }
+        }
+
+        private String generateMetaContent(File parentDirectory, File currentFile) throws IOException {
+            StringBuilder metaContent = new StringBuilder();
+            File[] files = parentDirectory.listFiles((dir, name) -> name.endsWith(settings.getInputExtension()));
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isFile() && !file.equals(currentFile)) {
+                        String otherFileContent = readFileContent(file);
+                        JavaConversion javaConversion = new JavaConversion(api, settings);
+                        String fileMetaContent = javaConversion.generateMetaContent(otherFileContent);
+                        metaContent.append("File: ").append(file.getName()).append("\n");
+                        if (!useAiFileNameCheckBox.isSelected()) {
+                            fileMetaContent = replaceClassName(fileMetaContent, extractOriginalClassName(otherFileContent, file.getName()), file.getName());
+                        }
+                        metaContent.append(fileMetaContent).append("\n\n");
+                    }
+                }
+            }
+            return metaContent.toString();
+        }
+
         private int countFiles(File directory) {
             int count = 0;
             File[] files = directory.listFiles();
@@ -700,300 +1143,76 @@ public class Reprogrammer extends JFrame {
             }
             return count;
         }
-    
+
         private String generateDirectoryStructure(File directory, String extension) {
             StringBuilder structureBuilder = new StringBuilder();
             appendDirectoryStructure(directory, extension, structureBuilder, "");
             return structureBuilder.toString();
         }
-    
-        private void appendDirectoryStructure(File directory, String extension, StringBuilder structureBuilder, String indent) {
+
+        private void appendDirectoryStructure(File directory, String extension, StringBuilder structureBuilder,
+                String indent) {
+            if (!directory.toPath().startsWith(inputFolder.toPath())) {
+                return;
+            }
+
             structureBuilder.append(indent).append(directory.getName()).append("/\n");
             File[] files = directory.listFiles();
             if (files != null) {
                 for (File file : files) {
                     if (file.isDirectory()) {
                         appendDirectoryStructure(file, extension, structureBuilder, indent + "  ");
-                    } else if (file.getName().endsWith(extension)) {
+                    } else if (file.getName().endsWith(extension) && !file.isHidden()
+                            && !file.getName().contains("Operations")) {
                         structureBuilder.append(indent).append("  ").append(file.getName()).append("\n");
                     }
                 }
             }
         }
-    
-        private boolean processFile(File file, String directoryStructure, String fileContent, Map<String, ClassIndex> classIndex) {
-            try {
-                JavaConversion javaConversion = new JavaConversion(api, settings);
-                if (fileContent.isEmpty()) {
-                    logToTextArea("File content is empty, skipping conversion.");
-                    return false;
-                }
-    
-                String fullPrompt = settings.getPrompt() + "\nProject structure:\n" + directoryStructure;
-                String convertedContent = javaConversion.convertCode(fileContent, fullPrompt, "");
-                if (convertedContent.trim().isEmpty()) {
-                    logToTextArea("Initial conversion failed or resulted in empty content.");
-                    return false;
-                }
-    
-                clearTextArea();
-                updateTextArea(convertedContent);
-    
-                // Update package and import statements
-                convertedContent = updatePackageAndImports(file, convertedContent, classIndex);
-    
-                // Check and fix syntax errors
-                convertedContent = checkAndFixSyntax(convertedContent);
-    
-                // Generate new file name using AI
-                String newFileName = file.getName();
-                if (useAiFileNameCheckBox.isSelected()) {
-                    newFileName = generateNewFileName(file.getName().replace(settings.getInputExtension(), ""), convertedContent); // Call with fileContent
+
+        private String extractOriginalClassName(String fileContent, String fileName) {
+            Pattern pattern = Pattern.compile("\\b(class|struct)\\s+(\\w+)");
+            Matcher matcher = pattern.matcher(fileContent);
+            if (matcher.find()) {
+                return matcher.group(2); // Group 2 contains the class/struct name
+            } else {
+                // Fallback to using the file name without extension, converted to CamelCase
+                String baseName = fileName.substring(0, fileName.lastIndexOf('.'));
+                return toCamelCase(baseName);
+            }
+        }
+
+        private String toCamelCase(String input) {
+            if (input == null || input.isEmpty()) {
+                return input;
+            }
+            StringBuilder camelCase = new StringBuilder();
+            boolean nextUpperCase = false;
+            for (char c : input.toCharArray()) {
+                if (c == '_' || c == '-' || c == ' ') {
+                    nextUpperCase = true;
                 } else {
-                    newFileName = toCamelCase(newFileName.replace(settings.getInputExtension(), ""));
-                }
-    
-                // Rename the class inside the file to match the new filename
-                String classNameWithoutExtension = file.getName().replace(settings.getInputExtension(), "");
-                convertedContent = replaceClassName(convertedContent, classNameWithoutExtension, newFileName.replace(settings.getOutputExtension(), ""));
-    
-                saveConvertedFile(file, convertedContent, newFileName);
-                convertedFilesMap.put(file.getAbsolutePath(), newFileName);
-                return true;
-            } catch (Exception e) {
-                logToTextArea("Error processing file: " + file.getAbsolutePath());
-                e.printStackTrace();
-                return false;
-            }
-        }
-    
-        static String toCamelCase(String input) {
-            if (StringUtils.isBlank(input)) {
-                return input;
-            }
-    
-            // Check if the input is already in camel case
-            if (input.matches("([a-z]+[A-Z]+\\w+)+")) {
-                return input;
-            }
-    
-            String[] parts = input.split("_");
-            StringBuilder camelCaseString = new StringBuilder();
-    
-            for (String part : parts) {
-                if (!part.isEmpty()) {
-                    if (camelCaseString.length() == 0) {
-                        camelCaseString.append(part);
+                    if (nextUpperCase) {
+                        camelCase.append(Character.toUpperCase(c));
+                        nextUpperCase = false;
                     } else {
-                        camelCaseString.append(StringUtils.capitalize(part.toLowerCase()));
+                        camelCase.append(c);
                     }
                 }
             }
-    
-            return camelCaseString.toString();
+            return camelCase.toString();
         }
-    
-        private Map<String, ClassIndex> indexClasses(File directory) {
-            Map<String, ClassIndex> classIndex = new HashMap<>();
-            File[] files = directory.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    if (file.isDirectory()) {
-                        classIndex.putAll(indexClasses(file));
-                    } else if (file.getName().endsWith(settings.getInputExtension())) {
-                        String fileContent = readFileContent(file);
-                        JavaParser parser = new JavaParser();
-                        ParseResult<CompilationUnit> parseResult = parser.parse(fileContent);
-                        if (parseResult.isSuccessful() && parseResult.getResult().isPresent()) {
-                            CompilationUnit cu = parseResult.getResult().get();
-                            Optional<PackageDeclaration> packageDeclaration = cu.getPackageDeclaration();
-                            String packageName = packageDeclaration.map(PackageDeclaration::getNameAsString).orElse("");
-                            List<TypeDeclaration<?>> types = cu.getTypes();
-                            for (TypeDeclaration<?> type : types) {
-                                if (type instanceof ClassOrInterfaceDeclaration) {
-                                    String originalClassName = type.getNameAsString();
-                                    String newClassName = originalClassName;
-                                    if (useAiFileNameCheckBox.isSelected()) {
-                                        newClassName = generateNewFileName(originalClassName, fileContent);
-                                    }
-                                    String filePath = file.getAbsolutePath();
-                                    classIndex.put(originalClassName, new ClassIndex(originalClassName, newClassName, packageName, filePath));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            return classIndex;
+
+        private String readFileContent(File file) throws IOException {
+            return new String(Files.readAllBytes(file.toPath()));
         }
-    
-        private String updatePackageAndImports(File file, String fileContent, Map<String, ClassIndex> classIndex) {
-            JavaParser parser = new JavaParser();
-            ParseResult<CompilationUnit> parseResult = parser.parse(fileContent);
-            if (parseResult.isSuccessful() && parseResult.getResult().isPresent()) {
-                CompilationUnit cu = parseResult.getResult().get();
-    
-                // Ensure the package declaration is present
-                ClassIndex currentClassIndex = getCurrentClassIndex(file.getName(), classIndex);
-                if (currentClassIndex != null && !cu.getPackageDeclaration().isPresent()) {
-                    cu.setPackageDeclaration(new PackageDeclaration(new Name(currentClassIndex.getPackageName())));
-                }
-    
-                cu.accept(new PackageAndImportVisitor(file, classIndex), null);
-                return cu.toString();
-            }
-            return fileContent;
-        }
-    
-        private ClassIndex getCurrentClassIndex(String currentFileName, Map<String, ClassIndex> classIndex) {
-            String currentClassName = currentFileName.substring(0, currentFileName.lastIndexOf("."));
-            return classIndex.get(currentClassName);
-        }
-    
-        private String checkAndFixSyntax(String fileContent) {
-            JavaParser parser = new JavaParser();
-            ParseResult<CompilationUnit> parseResult = parser.parse(fileContent);
-            if (parseResult.isSuccessful() && parseResult.getResult().isPresent()) {
-                CompilationUnit cu = parseResult.getResult().get();
-                SyntaxChecker syntaxChecker = new SyntaxChecker(api, settings);
-                return syntaxChecker.checkAndFixSyntax(cu);
-            }
-            return fileContent;
-        }
-    
-        private String generateNewFileName(String currentClassName, String fileContent) {
-            String prompt = "Create a new name for the Java class '" + currentClassName
-                    + "'. It must be in English. Respond with XML, containing the new filename only. File Content: "
-                    + fileContent;
-            String response = api.generateText(prompt, settings.getMaxTokens(), false);
-    
-            // Extracting the new file name from the AI response
-            String newFileName = extractFromXml(response, "filename");
-            if (newFileName == null || newFileName.isEmpty()) {
-                newFileName = currentClassName; // Fallback to the current class name if AI fails to generate a new name
-            }
-            newFileName = sanitizeFileName(newFileName.trim());
-    
-            // Ensure the filename has the correct extension
-            if (!newFileName.endsWith(settings.getOutputExtension())) {
-                newFileName += settings.getOutputExtension();
-            }
-    
-            // Remove the old extension if present
-            if (newFileName.endsWith(settings.getInputExtension() + settings.getOutputExtension())) {
-                newFileName = newFileName.replace(settings.getInputExtension(), "");
-            }
-    
-            return newFileName;
-        }
-    
-        private String extractFromXml(String xml, String tagName) {
-            String regex = "<" + tagName + ">(.+?)</" + tagName + ">";
-            Pattern pattern = Pattern.compile(regex);
-            Matcher matcher = pattern.matcher(xml);
-            if (matcher.find()) {
-                return matcher.group(1);
-            }
-            return "";
-        }
-    
-        private String sanitizeFileName(String fileName) {
-            // Remove invalid characters for a Windows file path
-            return fileName.replaceAll("[<>:\"/\\|?*]", "").trim();
-        }
-    
-        private String replaceClassName(String content, String oldName, String newName) {
-            String regex = "\\b" + Pattern.quote(oldName) + "\\b";
-            return content.replaceAll(regex, newName);
-        }
-    
-        private void saveConvertedFile(File originalFile, String convertedContent, String newFileName)
-                throws IOException {
-            // Extract the package name
-            Pattern pattern = Pattern.compile(settings.getPackagePattern());
-            Matcher matcher = pattern.matcher(convertedContent);
-            String packageName = "";
-            if (matcher.find()) {
-                packageName = matcher.group(1).replace('.', File.separatorChar);
-            }
-    
-            // Determine the relative path and create necessary directories
-            Path relativePath = inputFolder.toPath().relativize(originalFile.toPath()).getParent();
-            if (relativePath == null) {
-                relativePath = Path.of("");
-            }
-    
-            Path outputSubfolder = outputFolder.toPath().resolve(relativePath).resolve(packageName);
-            File subfolder = outputSubfolder.toFile();
-            if (!subfolder.exists() && !subfolder.mkdirs()) {
-                logToTextArea("Failed to create directory: " + subfolder.getAbsolutePath());
-                return;
-            }
-    
-            // Save the converted file
-            Path outputFilePath = outputSubfolder.resolve(newFileName);
-            File outputFile = outputFilePath.toFile();
-    
-            try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
-                writer.write(convertedContent);
-                api.clearHistory();
-                logToTextArea("Converted: " + outputFile.getAbsolutePath());
-            } catch (IOException e) {
-                logToTextArea("Error writing to file: " + outputFile.getAbsolutePath());
-                e.printStackTrace();
+
+        private void saveFile(File file, String content) throws IOException {
+            try (FileWriter writer = new FileWriter(file)) {
+                writer.write(content);
             }
         }
-    
-        private void finalizeFileRenaming(Map<String, String> convertedFilesMap) throws IOException {
-            for (Map.Entry<String, String> entry : convertedFilesMap.entrySet()) {
-                File originalFile = new File(entry.getKey());
-                String newFileName = entry.getValue();
-                Path relativePath = inputFolder.toPath().relativize(originalFile.toPath()).getParent();
-                String newFilePath = outputFolder.toPath().resolve(relativePath).resolve(newFileName).toString(); // Use output directory and relative path
-    
-                String fileContent = readFileContent(new File(newFilePath));
-                for (String oldFileName : convertedFilesMap.keySet()) {
-                    String oldClassName = oldFileName.substring(oldFileName.lastIndexOf(File.separator) + 1)
-                            .replace(settings.getInputExtension(), "");
-                    String newClassName = convertedFilesMap.get(oldFileName).replace(settings.getOutputExtension(), "");
-                    fileContent = replaceClassName(fileContent, oldClassName, newClassName);
-                }
-    
-                // Ensure the package declaration is present
-                String packageName = getPackageNameFromFilePath(newFilePath);
-                if (!fileContent.startsWith("package ")) {
-                    fileContent = "package " + packageName + ";\n\n" + fileContent;
-                }
-    
-                try (BufferedWriter writer = new BufferedWriter(new FileWriter(newFilePath))) {
-                    writer.write(fileContent);
-                    logToTextArea("Finalized: " + newFilePath);
-                }
-            }
-        }
-    
-        private String getPackageNameFromFilePath(String filePath) {
-            String relativePath = outputFolder.toPath().relativize(Path.of(filePath)).getParent().toString();
-            return relativePath.replace(File.separatorChar, '.');
-        }
-    
-        private String generateMetaContent(File parentDirectory, File currentFile) throws IOException {
-            StringBuilder metaContent = new StringBuilder();
-            File[] files = parentDirectory.listFiles((dir, name) -> name.endsWith(settings.getInputExtension()));
-            if (files != null) {
-                for (File file : files) {
-                    if (file.isFile() && !file.equals(currentFile)) {
-                        String otherFileContent = readFileContent(file);
-                        JavaConversion javaConversion = new JavaConversion(api, settings);
-                        String fileMetaContent = javaConversion.generateMetaContent(otherFileContent);
-                        metaContent.append("File: ").append(file.getName()).append("\n");
-                        metaContent.append(fileMetaContent).append("\n\n");
-                    }
-                }
-            }
-            return metaContent.toString();
-        }
-    }            
+    }
 
     private static class PackageAndImportVisitor extends VoidVisitorAdapter<Void> {
         private final File currentFile;
@@ -1043,6 +1262,8 @@ public class Reprogrammer extends JFrame {
         this.api = new Assistant();
         this.convertedFilesMap = new HashMap<>();
         this.processedFiles = 0;
+        this.metaContent = new StringBuilder();
+        this.combinedSmallFilesContent = new StringBuilder();
         initComponents();
         addListeners();
     }
@@ -1153,12 +1374,24 @@ public class Reprogrammer extends JFrame {
         loadProgressButton = new JButton("Load Progress");
         includeMetaCheckBox = new JCheckBox("Include Meta Content");
         useAiFileNameCheckBox = new JCheckBox("Use AI for File Names");
+        combineSmallFilesCheckBox = new JCheckBox("Combine Small Files");
+
+        combineSmallFilesCheckBox.addActionListener(e -> {
+            if (combineSmallFilesCheckBox.isSelected() && !useAiFileNameCheckBox.isSelected()) {
+                useAiFileNameCheckBox.setSelected(true);
+                useAiFileNameCheckBox.setEnabled(false);
+            } else {
+                useAiFileNameCheckBox.setEnabled(true);
+            }
+        });
+
         buttonPanel.add(startButton);
         buttonPanel.add(pauseButton);
         buttonPanel.add(saveProgressButton);
         buttonPanel.add(loadProgressButton);
         buttonPanel.add(includeMetaCheckBox);
         buttonPanel.add(useAiFileNameCheckBox);
+        buttonPanel.add(combineSmallFilesCheckBox);
 
         bottomPanel.add(buttonPanel, BorderLayout.WEST);
         bottomPanel.add(progressPanel, BorderLayout.CENTER);
@@ -1202,6 +1435,8 @@ public class Reprogrammer extends JFrame {
 
         convertedFilesMap.clear();
         processedFiles = 0;
+        metaContent = new StringBuilder();
+        combinedSmallFilesContent = new StringBuilder();
 
         if (inputFolderPath.isEmpty() || outputFolderPath.isEmpty()) {
             JOptionPane.showMessageDialog(this, "Please enter both input and output folder paths.", "Error",
@@ -1226,7 +1461,8 @@ public class Reprogrammer extends JFrame {
         fileStatusLabel.setText("Processing...");
         progressBar.setValue(0);
 
-        FileProcessor processor = new FileProcessor(inputFolder, null, 0);
+        FileProcessor processor = new FileProcessor(inputFolder, convertedFilesMap, processedFiles, metaContent,
+                combinedSmallFilesContent);
         processor.execute();
     }
 
@@ -1247,7 +1483,8 @@ public class Reprogrammer extends JFrame {
         }
         File progressFile = new File(outputFolder, "progress.ser");
         try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(progressFile))) {
-            ProgressState state = new ProgressState(inputFolder, convertedFilesMap, processedFiles, progressBar.getValue());
+            ProgressState state = new ProgressState(inputFolder, convertedFilesMap, processedFiles,
+                    progressBar.getValue(), metaContent, combinedSmallFilesContent);
             out.writeObject(state);
             logToTextArea("Progress saved.");
         } catch (IOException ex) {
@@ -1270,9 +1507,13 @@ public class Reprogrammer extends JFrame {
             convertedFilesMap = state.getConvertedFilesMap();
             processedFiles = state.getProcessedFiles();
             int progress = state.getProgress();
+            metaContent = state.getMetaContent();
+            combinedSmallFilesContent = state.getCombinedSmallFilesContent();
+
             progressBar.setValue(progress);
             if (progress < 100) {
-                FileProcessor processor = new FileProcessor(inputFolder, convertedFilesMap, processedFiles);
+                FileProcessor processor = new FileProcessor(inputFolder, convertedFilesMap, processedFiles, metaContent,
+                        combinedSmallFilesContent);
                 processor.execute();
                 logToTextArea("Progress loaded and processing resumed.");
             } else {
@@ -1314,6 +1555,9 @@ public class Reprogrammer extends JFrame {
                 System.out.println(entry.getKey() + ": " + entry.getValue());
             }
 
+            // Validate the API key for the selected AI service
+            validateApiKey(settings);
+
             @SuppressWarnings("unchecked")
             Map<String, String> languageExtensions = (Map<String, String>) settings.get("language_extensions");
             LanguageSettings languageSettings = new LanguageSettings(
@@ -1329,6 +1573,7 @@ public class Reprogrammer extends JFrame {
             });
         } catch (IOException e) {
             e.printStackTrace();
+            showErrorDialog(e.getMessage());
         }
     }
 
@@ -1343,6 +1588,7 @@ public class Reprogrammer extends JFrame {
             validateSetting(settings, "prompt");
             validateSetting(settings, "output_extension");
             validateSetting(settings, "language_extensions");
+            validateSetting(settings, "ai_service");
 
             return settings;
         }
@@ -1352,5 +1598,35 @@ public class Reprogrammer extends JFrame {
         if (!settings.containsKey(key)) {
             throw new IOException("Missing required setting: " + key);
         }
+    }
+
+    private static void validateApiKey(Map<String, Object> settings) throws IOException {
+        String aiService = (String) settings.get("ai_service");
+
+        switch (aiService) {
+            case "openai":
+                String openaiApiKey = (String) settings.get("openai_api_key");
+                if (openaiApiKey == null || !openaiApiKey.startsWith("sk-")) {
+                    throw new IOException("Invalid OpenAI API key. It must be set and start with 'sk-'.");
+                }
+                break;
+            case "custom":
+                // Add custom API key validation if needed
+                break;
+            case "claude":
+                String claudeApiKey = (String) settings.get("claude_api_key");
+                if (claudeApiKey == null || !claudeApiKey.startsWith("sk-")) {
+                    throw new IOException("Invalid Claude API key. It must be set and start with 'sk-'.");
+                }
+                break;
+            default:
+                throw new IOException("Unsupported AI service: " + aiService);
+        }
+    }
+
+    private static void showErrorDialog(String message) {
+        SwingUtilities.invokeLater(() -> {
+            JOptionPane.showMessageDialog(null, message, "Error", JOptionPane.ERROR_MESSAGE);
+        });
     }
 }
